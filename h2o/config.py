@@ -36,19 +36,37 @@ prefs.defaults['header_format'] = header_default_format
 prefs.defaults['use_header'] = False  # empty string is equal to false
 prefs.defaults['sort_key'] = sort_key_default
 
-prefs.defaults['last_send_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(172800))
+prefs.defaults['last_send_time'] = time.strftime(
+    "%Y-%m-%d %H:%M:%S", time.gmtime(172800))
 prefs.defaults['prev_send'] = None  # the send time before last_send_time
 prefs.defaults['display_help_on_menu_open'] = True
-prefs.defaults['confirm_send_all'] = True  # confirmation dialog when sending all highlights
-prefs.defaults['highlights_sent_dialog'] = True  # show popup with how many highlights were sent
+# confirmation dialog when sending all highlights
+prefs.defaults['confirm_send_all'] = True
+# show popup with how many highlights were sent
+prefs.defaults['highlights_sent_dialog'] = True
 prefs.defaults['max_note_size'] = "20000"
 prefs.defaults['use_max_note_size'] = True  # make max_note_size easy to toggle
-prefs.defaults['copy_header'] = False  # whether to copy header when splitting a too-big note
+# whether to copy header when splitting a too-big note
+prefs.defaults['copy_header'] = False
 prefs.defaults['web_user_name'] = "*"
-prefs.defaults['web_user'] = False  # whether we should send web user or local user's highlights
+# whether we should send web user or local user's highlights
+prefs.defaults['web_user'] = False
 prefs.defaults['use_xdg_open'] = False
 prefs.defaults['sleep_secs'] = 0.1
 
+prefs.defaults.update({
+    # Absolute path to user's Obsidian vault. If non-empty and use_direct_write is True,
+    # the plugin will write notes directly into this folder (and can prepend content).
+    # Example: r"C:\Users\you\Obsidian\MyVault"
+    "vault_path": "",
+
+    # Enable direct file writes into the vault. When True and vault_path is set,
+    # send_item_to_obsidian will write notes directly to files (allows prepending).
+    "use_direct_write": True,
+
+    # After direct write, optionally open the note in Obsidian via obsidian://open.
+    "open_obsidian_after_write": False,
+})
 
 
 class ConfigWidget(QWidget):
@@ -61,7 +79,8 @@ class ConfigWidget(QWidget):
         self.spacing = 10
 
         # header
-        self.config_label = QLabel(f'<b>Highlights to Obsidian v{version}</b>', self)
+        self.config_label = QLabel(
+            f'<b>Highlights to Obsidian v{version}</b>', self)
         self.l.addWidget(self.config_label)
 
         self.l.addSpacing(self.spacing)
@@ -99,7 +118,8 @@ class FormattingDialog(QDialog):
         self.linebreak = "=" * 80
         self.spacing = 20  # pixels
 
-        self.title_label = QLabel("<b>Highlights to Obsidian Formatting Options</b>")
+        self.title_label = QLabel(
+            "<b>Highlights to Obsidian Formatting Options</b>")
         self.l.addWidget(self.title_label)
         self.title_linebreak = QLabel(self.linebreak)
         self.l.addWidget(self.title_linebreak)
@@ -135,7 +155,8 @@ class FormattingDialog(QDialog):
         self.l.addWidget(self.body_format_label)
 
         self.body_format_input = QPlainTextEdit(self)
-        self.body_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.body_format_input.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.NoWrap)
         self.body_format_input.setPlainText(prefs['body_format'])
         self.body_format_input.setPlaceholderText("Note body format...")
         self.l.addWidget(self.body_format_input)
@@ -149,21 +170,25 @@ class FormattingDialog(QDialog):
         self.l.addWidget(self.no_notes_format_label)
 
         self.no_notes_format_input = QPlainTextEdit(self)
-        self.no_notes_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.no_notes_format_input.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.NoWrap)
         self.no_notes_format_input.setPlainText(prefs['no_notes_format'])
-        self.no_notes_format_input.setPlaceholderText("Body format for highlights without notes...")
+        self.no_notes_format_input.setPlaceholderText(
+            "Body format for highlights without notes...")
         self.l.addWidget(self.no_notes_format_input)
         self.no_notes_format_label.setBuddy(self.no_notes_format_input)
 
         self.l.addSpacing(self.spacing)
 
         # label for header formatting options
-        self.header_format_label = QLabel('<b>Header format</b> (avoid highlight-specific data like {highlight} or {url}):', self)
+        self.header_format_label = QLabel(
+            '<b>Header format</b> (avoid highlight-specific data like {highlight} or {url}):', self)
         self.l.addWidget(self.header_format_label)
 
         # text box for header formatting options
         self.header_format_input = QPlainTextEdit(self)
-        self.header_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.header_format_input.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.NoWrap)
         self.header_format_input.setPlainText(prefs['header_format'])
         self.header_format_input.setPlaceholderText("Header format...")
         self.l.addWidget(self.header_format_input)
@@ -179,7 +204,8 @@ class FormattingDialog(QDialog):
 
         # ok and cancel buttons
         self.buttons = QDialogButtonBox()
-        self.buttons.setStandardButtons(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.setStandardButtons(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.ok_button)
         self.buttons.rejected.connect(self.cancel_button)
         self.l.addWidget(self.buttons)
@@ -247,9 +273,11 @@ class OtherConfigDialog(QDialog):
         self.linebreak = "=" * 50
         self.spacing = 20  # pixels
 
-        self.setWindowTitle("Highlights to Obsidian: Other Configuration Options")
+        self.setWindowTitle(
+            "Highlights to Obsidian: Other Configuration Options")
 
-        self.title_label = QLabel("<b>Highlights to Obsidian Other Options</b>")
+        self.title_label = QLabel(
+            "<b>Highlights to Obsidian Other Options</b>")
         self.l.addWidget(self.title_label)
         self.title_linebreak = QLabel(self.linebreak)
         self.l.addWidget(self.title_linebreak)
@@ -268,6 +296,33 @@ class OtherConfigDialog(QDialog):
 
         self.l.addSpacing(self.spacing)
 
+        # --- NEW: obsidian vault path and direct-write options ---
+        self.vault_path_label = QLabel(
+            '<b>Obsidian vault absolute path (direct write):</b>', self)
+        self.l.addWidget(self.vault_path_label)
+
+        self.vault_path_input = QLineEdit(self)
+        self.vault_path_input.setText(prefs.get('vault_path', ''))
+        self.vault_path_input.setPlaceholderText(
+            r"C:\Users\you\Obsidian\YourVault")
+        self.l.addWidget(self.vault_path_input)
+        self.vault_path_label.setBuddy(self.vault_path_input)
+
+        self.use_direct_chk = QCheckBox(
+            "Enable direct write into vault (will PREPEND new content)")
+        self.use_direct_chk.setChecked(
+            bool(prefs.get('use_direct_write', False)))
+        self.l.addWidget(self.use_direct_chk)
+
+        self.open_after_chk = QCheckBox(
+            "Open note in Obsidian after direct write")
+        self.open_after_chk.setChecked(
+            bool(prefs.get('open_obsidian_after_write', False)))
+        self.l.addWidget(self.open_after_chk)
+        # --- end new section ---
+
+        self.l.addSpacing(self.spacing)
+
         # sort key
         self.sort_label = QLabel("<b>Sort key:</b> used to sort highlights that get sent to the same file.<br/>"
                                  + "(Sort keys can be any of H2O's formatting options. No brackets. "
@@ -282,11 +337,13 @@ class OtherConfigDialog(QDialog):
         self.l.addSpacing(self.spacing)
 
         # time setting
-        self.time_label = QLabel('<b>Last time highlights were sent</b> (highlights made after this are considered new)', self)
+        self.time_label = QLabel(
+            '<b>Last time highlights were sent</b> (highlights made after this are considered new)', self)
         self.l.addWidget(self.time_label)
 
         # time format info
-        self.time_format_label = QLabel("Time must be formatted \"YYYY-MM-DD hh:mm:ss\"")
+        self.time_format_label = QLabel(
+            "Time must be formatted \"YYYY-MM-DD hh:mm:ss\"")
         self.l.addWidget(self.time_format_label)
 
         self.time_input = QLineEdit(self)
@@ -295,14 +352,16 @@ class OtherConfigDialog(QDialog):
         self.time_label.setBuddy(self.time_input)
 
         # button to set time to now
-        self.set_time_now_button = QPushButton("Set last send time to now (UTC)", self)
+        self.set_time_now_button = QPushButton(
+            "Set last send time to now (UTC)", self)
         self.set_time_now_button.clicked.connect(self.set_time_now)
         self.l.addWidget(self.set_time_now_button)
 
         self.l.addSpacing(self.spacing)
 
         # max note size and related settings
-        self.max_size_label = QLabel("<b>Maximum note size</b> (errors can happen when notes are too long):")
+        self.max_size_label = QLabel(
+            "<b>Maximum note size</b> (errors can happen when notes are too long):")
         self.l.addWidget(self.max_size_label)
 
         self.max_size_input = QLineEdit()
@@ -310,55 +369,65 @@ class OtherConfigDialog(QDialog):
         self.max_size_input.setPlaceholderText("Max note size...")
         self.l.addWidget(self.max_size_input)
 
-        self.use_max_size_checkbox = QCheckBox("Restrict length of sent notes to the max note size")
+        self.use_max_size_checkbox = QCheckBox(
+            "Restrict length of sent notes to the max note size")
         self.use_max_size_checkbox.setChecked(prefs['use_max_note_size'])
         self.l.addWidget(self.use_max_size_checkbox)
 
-        self.copy_header_checkbox = QCheckBox("When splitting up a long note, include the header in each smaller note")
+        self.copy_header_checkbox = QCheckBox(
+            "When splitting up a long note, include the header in each smaller note")
         self.copy_header_checkbox.setChecked(prefs['copy_header'])
         self.l.addWidget(self.copy_header_checkbox)
 
         self.l.addSpacing(self.spacing)
 
         # checkbox for confirmation dialog
-        self.show_confirmation_checkbox = QCheckBox("Confirmation dialog when sending all highlights")
+        self.show_confirmation_checkbox = QCheckBox(
+            "Confirmation dialog when sending all highlights")
         self.show_confirmation_checkbox.setChecked(prefs['confirm_send_all'])
         self.l.addWidget(self.show_confirmation_checkbox)
 
         # checkbox for showing how many highlights were sent
-        self.show_count_checkbox = QCheckBox("After sending highlights, show how many were sent")
+        self.show_count_checkbox = QCheckBox(
+            "After sending highlights, show how many were sent")
         self.show_count_checkbox.setChecked(prefs['highlights_sent_dialog'])
         self.l.addWidget(self.show_count_checkbox)
 
         self.l.addSpacing(self.spacing)
 
         # input for sleep time between highlights
-        self.sleep_label = QLabel('<b>Time to wait</b> between sending files (in seconds):', self)
+        self.sleep_label = QLabel(
+            '<b>Time to wait</b> between sending files (in seconds):', self)
         self.l.addWidget(self.sleep_label)
 
         self.sleep_time_input = QLineEdit()
         self.sleep_time_input.setText(str(prefs['sleep_secs']))
-        self.sleep_time_input.setPlaceholderText("Web user name (asterisk if no username is used)...")
+        self.sleep_time_input.setPlaceholderText(
+            "Web user name (asterisk if no username is used)...")
         self.l.addWidget(self.sleep_time_input)
 
         self.l.addSpacing(self.spacing)
 
         # input for web user's name
-        self.web_label = QLabel('<b>Web user\'s username</b> (if sending web user\'s highlights):', self)
+        self.web_label = QLabel(
+            '<b>Web user\'s username</b> (if sending web user\'s highlights):', self)
         self.l.addWidget(self.web_label)
 
         self.web_user_name_input = QLineEdit()
         self.web_user_name_input.setText(prefs['web_user_name'])
-        self.web_user_name_input.setPlaceholderText("Web user name (asterisk if no username is used)...")
+        self.web_user_name_input.setPlaceholderText(
+            "Web user name (asterisk if no username is used)...")
         self.l.addWidget(self.web_user_name_input)
 
         # checkbox for local user or web user
-        self.web_user_checkbox = QCheckBox("Send web user's highlights (instead of local user's highlights)")
+        self.web_user_checkbox = QCheckBox(
+            "Send web user's highlights (instead of local user's highlights)")
         self.web_user_checkbox.setChecked(prefs['web_user'])
         self.l.addWidget(self.web_user_checkbox)
 
         # checkbox for linux xdg-open
-        self.linux_xdg_checkbox = QCheckBox("Use Linux xdg-open command instead of Python webbrowser.open()")
+        self.linux_xdg_checkbox = QCheckBox(
+            "Use Linux xdg-open command instead of Python webbrowser.open()")
         self.linux_xdg_checkbox.setChecked(prefs['use_xdg_open'])
         self.l.addWidget(self.linux_xdg_checkbox)
 
@@ -366,20 +435,29 @@ class OtherConfigDialog(QDialog):
 
         # ok and cancel buttons
         self.buttons = QDialogButtonBox()
-        self.buttons.setStandardButtons(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.setStandardButtons(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.ok_button)
         self.buttons.rejected.connect(self.cancel_button)
         self.l.addWidget(self.buttons)
 
     def set_time_now(self):
-        prefs["last_send_time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+        prefs["last_send_time"] = time.strftime(
+            "%Y-%m-%d %H:%M:%S", time.gmtime())
         self.time_input.setText(prefs['last_send_time'])
 
     def save_settings(self):
         prefs['vault_name'] = self.vault_input.text()
+        # save new vault direct-write settings
+        prefs['vault_path'] = self.vault_path_input.text().strip()
+        prefs['use_direct_write'] = bool(self.use_direct_chk.isChecked())
+        prefs['open_obsidian_after_write'] = bool(
+            self.open_after_chk.isChecked())
+
         prefs['sort_key'] = self.sort_input.text()
         max_size = self.max_size_input.text()
-        prefs['max_note_size'] = max_size if max_size.isnumeric() else prefs['max_note_size']
+        prefs['max_note_size'] = max_size if max_size.isnumeric(
+        ) else prefs['max_note_size']
         prefs['use_max_note_size'] = self.use_max_size_checkbox.isChecked()
         prefs['copy_header'] = self.copy_header_checkbox.isChecked()
         prefs['confirm_send_all'] = self.show_confirmation_checkbox.isChecked()
@@ -394,7 +472,7 @@ class OtherConfigDialog(QDialog):
             prefs['sleep_secs'] = float(sleep_time)
         except:
             txt = f'Could not parse "{sleep_time}". The time to wait between sending highlights will not be changed. ' + \
-                  f'Old value of "{prefs["sleep_secs"]}" will be kept.'
+                f'Old value of "{prefs["sleep_secs"]}" will be kept.'
             warning_dialog(self, "Invalid Time", txt, show=True)
 
         # validate time input
@@ -406,7 +484,7 @@ class OtherConfigDialog(QDialog):
             prefs['last_send_time'] = send_time
         except:
             txt = f'Could not parse time "{send_time}". Either it is formatted improperly or the year is too high' + \
-                  f' or low.\n\n Keeping previous time "{prefs["last_send_time"]}" instead.'
+                f' or low.\n\n Keeping previous time "{prefs["last_send_time"]}" instead.'
             warning_dialog(self, "Invalid Time", txt, show=True)
 
     def ok_button(self):

@@ -21,29 +21,148 @@ def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
 
     for reference, see https://help.obsidian.md/Advanced+topics/Using+obsidian+URI#Action+new
     """
-    encoded_data = urlencode(obsidian_data, quote_via=quote)
-    uri = "obsidian://new?" + encoded_data
-    try:
-        if prefs['use_xdg_open']:
-            # this is to avoid a bug on linux, where the uri is opened in web browser instead of Obsidian
-            # https://docs.python.org/3/library/sys.html#sys.platform
-            if sys.platform.startswith('win32'):
-                raise NotImplementedError("Can't use xdg-open on Windows, see settings")
-            elif sys.platform.startswith('darwin'):
-                raise NotImplementedError("Can't use xdg-open on Mac, see settings")
+    # 固定安全值（保持与你之前决定的固定值一致）
+    WINDOWS_URI_LIMIT = 30000
+
+    def _open_uri(uri: str):
+        try:
+            if prefs['use_xdg_open']:
+                if sys.platform.startswith('win32'):
+                    raise NotImplementedError(
+                        "Can't use xdg-open on Windows, see settings")
+                elif sys.platform.startswith('darwin'):
+                    raise NotImplementedError(
+                        "Can't use xdg-open on Mac, see settings")
+                else:
+                    os.system(f'xdg-open \"{uri}\"')
             else:
-                # probably a linux or unix os
-                os.system(f'xdg-open \"{uri}\"')
-                # using subprocess.run() doesn't seem to work
+                webbrowser.open(uri)
+        except ValueError as e:
+            raise ValueError(f" send_item_to_obsidian: '{e}' in note '{obsidian_data.get('file', '')}'.\n\n"
+                             f"If this error says that the filepath is too long, try reducing the max file size in "
+                             f"the Highlights to Obsidian config (the path length that caused this error is {len(uri)}. "
+                             f"The path size will be larger than the max file size due to URL encoding).")
+
+    # ---- Direct write to vault (if configured) ----
+    # If the user configured prefs['vault_path'] (absolute path to their vault) and enabled
+    # prefs['use_direct_write'] (bool), write the file directly and PREPEND content.
+    vault_path = prefs.get('vault_path', None)
+    use_direct = bool(prefs.get('use_direct_write', False))
+    if vault_path and use_direct:
+        rel_path = obsidian_data.get("file", "")
+        # file paths in obsidian_data use forward slashes to indicate folders: "Folder/Sub/file"
+        parts = [p for p in rel_path.split("/") if p != ""]
+        if not parts:
+            raise RuntimeError("Invalid note file path for direct write")
+        filename = parts[-1]
+        # ensure .md extension
+        if not filename.lower().endswith(".md"):
+            filename = filename + ".md"
+        subdirs = parts[:-1]
+        target_dir = os.path.join(
+            vault_path, *subdirs) if subdirs else vault_path
+        os.makedirs(target_dir, exist_ok=True)
+        target_path = os.path.join(target_dir, filename)
+
+        content = obsidian_data.get("content", "") or ""
+
+        # read existing file (if any) and prepend new content
+        existing = ""
+        if os.path.exists(target_path):
+            try:
+                with open(target_path, "r", encoding="utf-8") as f:
+                    existing = f.read()
+            except Exception:
+                # fallback: try latin-1 if utf-8 fails
+                try:
+                    with open(target_path, "r", encoding="latin-1") as f:
+                        existing = f.read()
+                except Exception:
+                    existing = ""
+
+        # write new content + existing (prepend)
+        try:
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(content + existing)
+        except Exception:
+            # final fallback: write ignoring errors
+            with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
+                f.write(content + existing)
+
+        # optionally open the file in Obsidian after writing if user wants
+        if prefs.get("open_obsidian_after_write", False):
+            # open vault and file — use obsidian URI to reveal/open
+            vault_name = prefs.get("vault_name", "")
+            uri_file = rel_path
+            try:
+                webbrowser.open(
+                    f"obsidian://open?vault={quote(vault_name)}&file={quote(uri_file)}")
+            except Exception:
+                pass
+
+        return
+    # ---- end direct write path ----
+
+    # build base (without content) to estimate overhead
+    base_items = {k: v for k, v in obsidian_data.items() if k != "content"}
+    base_encoded = urlencode(base_items, quote_via=quote)
+    base_uri_prefix = "obsidian://new?" + base_encoded + "&content="
+    # encode content to check length
+    content = obsidian_data.get("content", "") or ""
+    uri = "obsidian://new?" + urlencode(obsidian_data, quote_via=quote)
+
+    if len(uri) <= WINDOWS_URI_LIMIT:
+        _open_uri(uri)
+        return
+
+    # If too long, split content into chunks. Make chunk size conservative but not tiny to avoid single-char chunks.
+    base_len = len("obsidian://new?" + base_encoded)
+    # 50 bytes margin for safety
+    allowed_for_content = max(100, WINDOWS_URI_LIMIT - base_len - 50)
+    # worst-case expansion: '%xx' => ~3x, be conservative
+    # ensure a reasonable minimum chunk size so we don't split to single characters
+    MIN_CHUNK_CHARS = 500
+    approx_chunk_chars = max(MIN_CHUNK_CHARS, allowed_for_content // 3)
+
+    # split content into approximate-char chunks (preserve Python str characters)
+    chunks = [content[i:i+approx_chunk_chars]
+              for i in range(0, len(content), approx_chunk_chars)]
+
+    # If even a single chunk is still too large after encoding, further reduce chunk size
+    final_chunks = []
+    for ch in chunks:
+        enc = quote(ch, safe='')
+        if len(base_uri_prefix) + len(enc) > WINDOWS_URI_LIMIT:
+            # reduce chunk until it fits; start from a smaller but still reasonable sub_size
+            sub_size = max(50, len(ch) * (WINDOWS_URI_LIMIT //
+                           (len(base_uri_prefix) + len(enc))))
+            # ensure we shrink gradually
+            start = 0
+            while start < len(ch):
+                part = ch[start:start+sub_size]
+                if len(base_uri_prefix) + len(quote(part, safe='')) <= WINDOWS_URI_LIMIT:
+                    final_chunks.append(part)
+                    start += sub_size
+                else:
+                    # shrink more if still too large
+                    sub_size = max(1, sub_size // 2)
         else:
-            # it might actually be better to do away with webbrowser.open() and only use os.system(). that might fix
-            #  the problem of needing to limit the max file size. would need to add support for each operating system.
-            webbrowser.open(uri)
-    except ValueError as e:
-        raise ValueError(f" send_item_to_obsidian: '{e}' in note '{obsidian_data['file']}'.\n\n"
-                         f"If this error says that the filepath is too long, try reducing the max file size in "
-                         f"the Highlights to Obsidian config (the path length that caused this error is {len(uri)}. "
-                         f"The path size will be larger than the max file size due to URL encoding).")
+            final_chunks.append(ch)
+
+    # send each chunk as an append to the same file.
+    # use a slightly longer pause so Obsidian has time to process the first creation before append calls.
+    PAUSE_BETWEEN_CHUNKS = 0.15
+
+    for idx, part in enumerate(final_chunks):
+        odata = dict(base_items)
+        file_name = obsidian_data.get("file", "")
+        odata["file"] = file_name
+        odata["content"] = part
+        # ensure append=true for all parts so they end up in same file
+        odata["append"] = "true"
+        uri_part = "obsidian://new?" + urlencode(odata, quote_via=quote)
+        _open_uri(uri_part)
+        time.sleep(PAUSE_BETWEEN_CHUNKS)
 
 
 def format_data(dat: Dict[str, str], title: str, body: str, no_notes_body: str = None) -> List[str]:
@@ -106,11 +225,14 @@ def make_time_format_dict(data: Dict) -> Dict[str, str]:
     # the "Z" at the end means UTC time
     # "%Y-%m-%dT%H:%M:%S", take [:19] of the timestamp to remove milliseconds
     # better alternative might be dateutil.parser.parse
-    h_time = datetime.datetime.strptime(annot["timestamp"][:19], "%Y-%m-%dT%H:%M:%S")
-    h_local = h_time + h_time.astimezone(datetime.datetime.now().tzinfo).utcoffset()
+    h_time = datetime.datetime.strptime(
+        annot["timestamp"][:19], "%Y-%m-%dT%H:%M:%S")
+    h_local = h_time + \
+        h_time.astimezone(datetime.datetime.now().tzinfo).utcoffset()
     local = time.localtime()
     utc = time.gmtime()
-    utc_offset = ("" if local.tm_gmtoff < 0 else "+") + str(local.tm_gmtoff // 3600) + ":00"
+    utc_offset = ("" if local.tm_gmtoff < 0 else "+") + \
+        str(local.tm_gmtoff // 3600) + ":00"
 
     time_options = {
         "date": str(h_time.date()),  # utc date highlight was made
@@ -124,9 +246,11 @@ def make_time_format_dict(data: Dict) -> Dict[str, str]:
         # https://github.com/kovidgoyal/calibre/blob/master/src/calibre/gui2/library/annotations.py#L34
         # todo: timezone currently displays "Coordinated Universal Time" instead of the abbreviation, "UTC"
         "timezone": h_local.tzname(),  # local timezone
-        "localtimezone": h_local.tzname(),  # so that the config menu's explanation doesn't confuse users
+        # so that the config menu's explanation doesn't confuse users
+        "localtimezone": h_local.tzname(),
         "utcoffset": utc_offset,
-        "localoffset": utc_offset,  # so that the config menu's explanation doesn't confuse users
+        # so that the config menu's explanation doesn't confuse users
+        "localoffset": utc_offset,
         "timeoffset": utc_offset,  # for backwards compatibility
         "day": f"{h_time.day:02}",
         "localday": f"{h_local.day:02}",
@@ -146,7 +270,8 @@ def make_time_format_dict(data: Dict) -> Dict[str, str]:
         "localnow": time.strftime("%Y-%m-%d %H:%M:%S", local),
         "localdatenow": time.strftime("%Y-%m-%d", local),
         "localtimenow": time.strftime("%H:%M:%S", local),
-        "timestamp": str(h_time.timestamp()),  # Unix timestamp of highlight time. uses UTC.
+        # Unix timestamp of highlight time. uses UTC.
+        "timestamp": str(h_time.timestamp()),
     }
 
     return time_options
@@ -187,10 +312,14 @@ def make_highlight_format_dict(data: Dict, calibre_library: str) -> Dict[str, st
 
     highlight_format = {
         "highlight": annot["highlighted_text"],  # highlighted text
-        "blockquote": format_blockquote(annot["highlighted_text"]),  # block-quoted highlight
-        "notes": annot["notes"] if "notes" in annot else "",  # user's notes on this highlight
-        "url": url_format.format(**url_args),  # calibre:// url to open ebook viewer to this highlight
-        "location": url_args["location"],  # epub cfi location of this highlight
+        # block-quoted highlight
+        "blockquote": format_blockquote(annot["highlighted_text"]),
+        # user's notes on this highlight
+        "notes": annot["notes"] if "notes" in annot else "",
+        # calibre:// url to open ebook viewer to this highlight
+        "url": url_format.format(**url_args),
+        # epub cfi location of this highlight
+        "location": url_args["location"],
         "uuid": annot["uuid"],  # highlight's ID in calibre
     }
 
@@ -204,12 +333,15 @@ def make_book_format_dict(data: Dict, book_titles_authors: Dict[int, Dict[str, s
     :param book_titles_authors: dictionary mapping book ids to {"title": title, "authors": authors}
     :return: dict containing all book-related formatting options
     """
-    title_authors = book_titles_authors.get(int(data["book_id"]), {})  # dict with {"title": str, "authors": Tuple[str]}
+    title_authors = book_titles_authors.get(
+        # dict with {"title": str, "authors": Tuple[str]}
+        int(data["book_id"]), {})
 
     format_options = {
         "title": title_authors.get("title", "Untitled"),  # title of book
         # todo: add "chapter" option
-        "authors": title_authors.get("authors", ("Unknown",)),  # authors of book
+        # authors of book
+        "authors": title_authors.get("authors", ("Unknown",)),
         "bookid": data["book_id"],
     }
 
@@ -229,7 +361,8 @@ def make_sent_format_dict(total_sent, book_sent, highlight_sent) -> Dict[str, st
     sent_dict = SafeDict()
     sent_dict["totalsent"] = str(total_sent)  # total highlights sent
     sent_dict["booksent"] = str(book_sent)  # highlights for this book
-    sent_dict["highlightsent"] = str(highlight_sent)  # position of this highlight
+    sent_dict["highlightsent"] = str(
+        highlight_sent)  # position of this highlight
 
     return sent_dict
 
@@ -255,7 +388,8 @@ def make_format_dict(data, calibre_library: str, book_titles_authors: Dict[int, 
     # these formatting options can't be calculated by the time make_format_dict is called.
     # actually, totalsent probably could be, but let's keep it here with the others.
     # we need to include this so that string.format() doesn't error if it runs into one of these
-    placeholders = make_sent_format_dict("{totalsent}", "{booksent}", "{highlightsent}")
+    placeholders = make_sent_format_dict(
+        "{totalsent}", "{booksent}", "{highlightsent}")
 
     # the | operator merges dictionaries https://peps.python.org/pep-0584/
     # could also pass a dict as a param to each make_x_dict, and have them update it in place
@@ -291,9 +425,11 @@ class BookData:
         self._title = title
         self._header = header
         if notes is not None:
-            self.notes: List[List[Union[str, Any]]] = list(sorted(notes, key=lambda n: n[1]))
+            self.notes: List[List[Union[str, Any]]] = list(
+                sorted(notes, key=lambda n: n[1]))
         else:
-            self.notes: List[List[Union[str, Any]]] = []  # List[List[note:str, sort_key:Any]]
+            # List[List[note:str, sort_key:Any]]
+            self.notes: List[List[Union[str, Any]]] = []
 
     def __len__(self):
         """ number of notes that this book has """
@@ -382,7 +518,8 @@ class BookData:
                                    f"'{self.title[:30]}', NOTE TEXT: '{self.notes[idx][0][:500]}'")
 
             if note_size + len(self.notes[idx][0]) > max_size:
-                title = self.title if _sent == 0 else self.title + f" ({_sent})"
+                title = self.title if _sent == 0 else self.title + \
+                    f" ({_sent})"
 
                 yield title, header + _accum
 
@@ -486,7 +623,8 @@ class BookList(dict):
                 self.apply_sent_body(title, book_highlights, total_highlights)
 
             if should_apply[2]:  # header
-                self.apply_sent_headers(title, book_highlights, total_highlights)
+                self.apply_sent_headers(
+                    title, book_highlights, total_highlights)
 
     def apply_sent_title(self, _title: str, _book_highlights: int, _total_highlights: int):
         """
@@ -504,8 +642,10 @@ class BookList(dict):
     def apply_sent_body(self, _title: str, _book_highlights: int, _total_highlights: int):
         for h in range(len(self[_title])):
             # since BookData keeps its note list sorted, it's easy to know how many have been sent before this
-            fmt = make_sent_format_dict(_total_highlights, _book_highlights, h + 1)
-            self[_title].update_note(h, format_single(fmt, self[_title].notes[h][0]))
+            fmt = make_sent_format_dict(
+                _total_highlights, _book_highlights, h + 1)
+            self[_title].update_note(
+                h, format_single(fmt, self[_title].notes[h][0]))
 
     def apply_sent_headers(self, _title: str, _book_highlights: int, _total_highlights: int):
         fmt = make_sent_format_dict(_total_highlights, _book_highlights, -1)
@@ -614,7 +754,8 @@ class HighlightSender:
         title, body, header = False, False, False
         for f in formats:
             title = title or (f in self.title_format)
-            body = body or (f in self.body_format) or (f in self.no_notes_format)
+            body = body or (f in self.body_format) or (
+                f in self.no_notes_format)
             header = header or (f in self.header_format)
         return title, body, header
 
@@ -652,7 +793,8 @@ class HighlightSender:
             # locations are something like "/int/int/int/int:int", but the ints aren't always the same length.
             # so normal string comparisons end up comparing "/" to numbers, which isn't what we want
             loc = dat[self.sort_key]
-            locs = loc.split("/")  # first element is empty string since location starts with "/"
+            # first element is empty string since location starts with "/"
+            locs = loc.split("/")
             locs, end = locs[1:-1], locs[-1]
 
             def get_num(x):
@@ -702,11 +844,14 @@ class HighlightSender:
         formatted_body is a tuple with (formatted_text, sort_key)
         formatted_header is None if a header is already present in _headers.
         """
-        dat = make_format_dict(_highlight, self.library_name, self.book_titles_authors)
-        formatted = format_data(dat, self.title_format, self.body_format, self.no_notes_format)
+        dat = make_format_dict(
+            _highlight, self.library_name, self.book_titles_authors)
+        formatted = format_data(dat, self.title_format,
+                                self.body_format, self.no_notes_format)
 
         # only make one header per title
-        header = None if formatted[0] in _headers else format_single(dat, self.header_format)
+        header = None if formatted[0] in _headers else format_single(
+            dat, self.header_format)
 
         return formatted[0], (formatted[1], self.format_sort_key(dat)), header
 
@@ -715,7 +860,8 @@ class HighlightSender:
         condition takes a highlight's json object and returns true if that highlight should be sent to obsidian.
         """
 
-        highlights = filter(lambda x: self.is_valid_highlight(x, condition), self.annotations_list)
+        highlights = filter(lambda x: self.is_valid_highlight(
+            x, condition), self.annotations_list)
         headers = []  # formatted headers: dict[note_title:str, header:str]
         books = BookList()
 
