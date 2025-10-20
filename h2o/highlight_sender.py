@@ -7,11 +7,72 @@ from typing import Dict, List, Callable, Any, Tuple, Iterable, Union
 from urllib.parse import urlencode, quote
 import datetime
 from calibre_plugins.highlights_to_obsidian.config import prefs
+import logging
+import tempfile
+import traceback
 
 # avoid importing anything else from calibre or the highlights_to_obsidian plugin here.
 # this is to avoid having references to the config or the calibre database scattered
 # throughout HighlightSender. those references are in HighlightSender.__init__() and
 # in make_sender() in button_actions.py.
+
+
+def _get_h2o_logger():
+    if hasattr(_get_h2o_logger, "logger"):
+        return _get_h2o_logger.logger
+    logger = logging.getLogger("highlights_to_obsidian")
+    logger.setLevel(logging.DEBUG)
+    # 清除所有现有处理器
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    # # determine log file: prefer vault_path if set, else system temp dir
+    # try:
+    #     vault = None
+    #     try:
+    #         vault = prefs.get("vault_path", None)
+    #     except Exception:
+    #         vault = None
+    #     if vault:
+    #         log_path = os.path.join(vault, "h2o_debug.log")
+    #     else:
+    #         log_path = os.path.join(tempfile.gettempdir(), "h2o_debug.log")
+    # except Exception:
+    #     log_path = os.path.join(tempfile.gettempdir(), "h2o_debug.log")
+    # if not logger.handlers:
+    #     fh = logging.FileHandler(log_path, encoding="utf-8")
+    #     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    #     fh.setFormatter(fmt)
+    #     logger.addHandler(fh)
+    # _get_h2o_logger.log_path = log_path
+
+    # 添加控制台处理器
+    ch = logging.StreamHandler()
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
+    _get_h2o_logger.logger = logger
+
+    return logger
+
+
+def reverse_highlight_sections(content: str) -> str:
+    """
+    反转由'---'分隔的高亮文本部分顺序
+
+    参数:
+        content: 包含高亮文本的字符串，用'---'分隔各部分
+
+    返回:
+        处理后的字符串，各部分顺序反转
+
+    示例输入:
+        'line1\\n---line2\\n---line3'
+    示例输出:
+        'line3\\n---line2\\n---line1'
+    """
+    parts = content.split('---')
+    reversed_parts = parts[::-1]
+    return '---'.join(reversed_parts)
 
 
 def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
@@ -21,6 +82,8 @@ def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
 
     for reference, see https://help.obsidian.md/Advanced+topics/Using+obsidian+URI#Action+new
     """
+    logger = _get_h2o_logger()
+
     # 固定安全值（保持与你之前决定的固定值一致）
     WINDOWS_URI_LIMIT = 30000
 
@@ -66,28 +129,72 @@ def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
 
         content = obsidian_data.get("content", "") or ""
 
-        # read existing file (if any) and prepend new content
+        # always performs a PREPEND-style write. To provide the user's desired semantics:
+        # - If prefs['prepend_on_write'] is True => user wants newest at top -> send in natural order.
+        # - If prefs['prepend_on_write'] is False (default, append semantics) => send in reverse order so repeated
+        #   prepends produce chronological append behavior.
+        use_direct = bool(prefs.get('use_direct_write', False))
+        vault_set = bool(prefs.get('vault_path', None))
+        prepend = bool(prefs.get('prepend_on_write', False))
+        should_reverse = False
+        if use_direct and vault_set:
+            logger.debug(
+                f"Direct write enabled. prepend_on_write={prefs.get('prepend_on_write')}")
+            should_reverse = not prepend  # reverse for append semantics
+
+        logger.debug(
+            f"Sending {len(content)} content to Obsidian . args: use_direct={use_direct}, vault_set={vault_set}, should_reverse={should_reverse}")
+        if should_reverse:
+            content = reverse_highlight_sections(content)
+        else:
+            content = content
+
+        logger.debug(
+            f"content = {content}; should_reverse = {should_reverse},iter_notes = {content}")
+
+        # Always perform a prepend-style write (content + existing).
+        # Ordering (append vs prepend semantics) is controlled by the caller (HighlightSender.send)
         existing = ""
         if os.path.exists(target_path):
             try:
                 with open(target_path, "r", encoding="utf-8") as f:
                     existing = f.read()
             except Exception:
-                # fallback: try latin-1 if utf-8 fails
+                logger.warning(
+                    "Failed to read existing note %s as utf-8, trying latin-1", target_path)
                 try:
                     with open(target_path, "r", encoding="latin-1") as f:
                         existing = f.read()
                 except Exception:
+                    logger.exception(
+                        "Failed to read existing note %s", target_path)
                     existing = ""
 
-        # write new content + existing (prepend)
+        # determine write order based on config: prepend (top) or append (bottom)
         try:
-            with open(target_path, "w", encoding="utf-8") as f:
-                f.write(content + existing)
+            if prepend:
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(content + existing)
+                logger.info("Wrote note to %s (prepended)", target_path)
+            else:
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(existing + content)
+                logger.info("Wrote note to %s (appended)", target_path)
         except Exception:
-            # final fallback: write ignoring errors
-            with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
-                f.write(content + existing)
+            logger.exception("Failed to write note to %s", target_path)
+            # final fallback: write ignoring errors with same prepend/append behavior
+            try:
+                if prepend:
+                    with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
+                        f.write(content + existing)
+                else:
+                    with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
+                        f.write(existing + content)
+                logger.info(
+                    "Wrote note to %s with errors ignored", target_path)
+            except Exception:
+                logger.exception(
+                    "Final fallback write also failed for %s", target_path)
 
         # optionally open the file in Obsidian after writing if user wants
         if prefs.get("open_obsidian_after_write", False):

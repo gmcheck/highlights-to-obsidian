@@ -66,6 +66,9 @@ prefs.defaults.update({
 
     # After direct write, optionally open the note in Obsidian via obsidian://open.
     "open_obsidian_after_write": False,
+
+    # Whether to prepend new content on direct write. Default False => append at end.
+    "prepend_on_write": False,
 })
 
 
@@ -319,6 +322,13 @@ class OtherConfigDialog(QDialog):
         self.open_after_chk.setChecked(
             bool(prefs.get('open_obsidian_after_write', False)))
         self.l.addWidget(self.open_after_chk)
+
+        # NEW: control whether to prepend (top) or append (bottom) when writing directly
+        self.prepend_chk = QCheckBox(
+            "When direct write is enabled, PREPEND new content (uncheck to APPEND at end)")
+        self.prepend_chk.setChecked(bool(prefs.get('prepend_on_write', False)))
+        self.l.addWidget(self.prepend_chk)
+
         # --- end new section ---
 
         self.l.addSpacing(self.spacing)
@@ -453,6 +463,9 @@ class OtherConfigDialog(QDialog):
         prefs['use_direct_write'] = bool(self.use_direct_chk.isChecked())
         prefs['open_obsidian_after_write'] = bool(
             self.open_after_chk.isChecked())
+
+        # save prepend/append preference for direct write
+        prefs['prepend_on_write'] = bool(self.prepend_chk.isChecked())
 
         prefs['sort_key'] = self.sort_input.text()
         max_size = self.max_size_input.text()
