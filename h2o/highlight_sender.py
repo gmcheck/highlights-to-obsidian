@@ -7,14 +7,17 @@ from typing import Dict, List, Callable, Any, Tuple, Iterable, Union
 from urllib.parse import urlencode, quote
 import datetime
 from calibre_plugins.highlights_to_obsidian.config import prefs
+from calibre_plugins.highlights_to_obsidian.constants import (
+    WINDOWS_URI_LIMIT, MIN_CHUNK_CHARS, PAUSE_BETWEEN_CHUNKS,
+    MAX_NOTE_TITLE_LENGTH, URI_SAFETY_MARGIN, MIN_SUB_CHUNK_SIZE,
+    TIMESTAMP_FORMAT
+)
+from calibre_plugins.highlights_to_obsidian.exceptions import (
+    H2OError, H2OSendError, H2OURIError, H2ODirectWriteError
+)
 import logging
 import tempfile
 import traceback
-
-# avoid importing anything else from calibre or the highlights_to_obsidian plugin here.
-# this is to avoid having references to the config or the calibre database scattered
-# throughout HighlightSender. those references are in HighlightSender.__init__() and
-# in make_sender() in button_actions.py.
 
 
 def _get_h2o_logger():
@@ -22,37 +25,55 @@ def _get_h2o_logger():
         return _get_h2o_logger.logger
     logger = logging.getLogger("highlights_to_obsidian")
     logger.setLevel(logging.DEBUG)
-    # 清除所有现有处理器
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-    # # determine log file: prefer vault_path if set, else system temp dir
-    # try:
-    #     vault = None
-    #     try:
-    #         vault = prefs.get("vault_path", None)
-    #     except Exception:
-    #         vault = None
-    #     if vault:
-    #         log_path = os.path.join(vault, "h2o_debug.log")
-    #     else:
-    #         log_path = os.path.join(tempfile.gettempdir(), "h2o_debug.log")
-    # except Exception:
-    #     log_path = os.path.join(tempfile.gettempdir(), "h2o_debug.log")
-    # if not logger.handlers:
-    #     fh = logging.FileHandler(log_path, encoding="utf-8")
-    #     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    #     fh.setFormatter(fmt)
-    #     logger.addHandler(fh)
-    # _get_h2o_logger.log_path = log_path
 
-    # 添加控制台处理器
-    ch = logging.StreamHandler()
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
     ch.setFormatter(fmt)
     logger.addHandler(ch)
-    _get_h2o_logger.logger = logger
 
+    try:
+        enable_file_logging = prefs.get("enable_file_logging", False)
+        if enable_file_logging:
+            vault = prefs.get("vault_path", None)
+            if vault and os.path.isdir(vault):
+                log_path = os.path.join(vault, "h2o_debug.log")
+            else:
+                log_path = os.path.join(tempfile.gettempdir(), "h2o_debug.log")
+            fh = logging.FileHandler(log_path, encoding="utf-8")
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+            _get_h2o_logger.log_path = log_path
+            logger.info(f"File logging enabled: {log_path}")
+        else:
+            logger.debug("File logging is disabled in settings")
+    except Exception as e:
+        logger.warning(f"Failed to setup file logging: {e}")
+
+    _get_h2o_logger.logger = logger
     return logger
+
+
+def parse_highlight_timestamp(highlight: Dict) -> float:
+    """
+    解析 calibre 高亮的时间戳，返回 Unix 时间戳（秒）
+
+    参数:
+        highlight: calibre 高亮数据对象，包含 annotation.timestamp 字段
+
+    返回:
+        Unix 时间戳（浮点数，秒）
+
+    示例:
+        highlight = {"annotation": {"timestamp": "2022-09-10T20:32:08.820Z"}}
+        ts = parse_highlight_timestamp(highlight)  # 返回 1662846728.0
+    """
+    timestamp_str = highlight["annotation"]["timestamp"][:19]
+    return time.mktime(time.strptime(timestamp_str, TIMESTAMP_FORMAT))
 
 
 def reverse_highlight_sections(content: str) -> str:
@@ -75,146 +96,197 @@ def reverse_highlight_sections(content: str) -> str:
     return '---'.join(reversed_parts)
 
 
-def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
+def _open_uri(uri: str) -> None:
     """
-    :param obsidian_data: should contain keys and values for 'vault', 'file', 'content', and anything
-    else you want to put into the obsidian://new url
+    打开 Obsidian URI
 
-    for reference, see https://help.obsidian.md/Advanced+topics/Using+obsidian+URI#Action+new
+    参数:
+        uri: Obsidian URI 字符串
+
+    异常:
+        H2OURIError: 当 URI 打开失败时
     """
     logger = _get_h2o_logger()
-
-    # 固定安全值（保持与你之前决定的固定值一致）
-    WINDOWS_URI_LIMIT = 30000
-
-    def _open_uri(uri: str):
-        try:
-            if prefs['use_xdg_open']:
-                if sys.platform.startswith('win32'):
-                    raise NotImplementedError(
-                        "Can't use xdg-open on Windows, see settings")
-                elif sys.platform.startswith('darwin'):
-                    raise NotImplementedError(
-                        "Can't use xdg-open on Mac, see settings")
-                else:
-                    os.system(f'xdg-open \"{uri}\"')
+    try:
+        if prefs['use_xdg_open']:
+            if sys.platform.startswith('win32'):
+                raise H2OURIError(
+                    "xdg-open is not supported on Windows. Please disable this option in settings.",
+                    uri_length=len(uri)
+                )
+            elif sys.platform.startswith('darwin'):
+                raise H2OURIError(
+                    "xdg-open is not supported on macOS. Please disable this option in settings.",
+                    uri_length=len(uri)
+                )
             else:
-                webbrowser.open(uri)
-        except ValueError as e:
-            raise ValueError(f" send_item_to_obsidian: '{e}' in note '{obsidian_data.get('file', '')}'.\n\n"
-                             f"If this error says that the filepath is too long, try reducing the max file size in "
-                             f"the Highlights to Obsidian config (the path length that caused this error is {len(uri)}. "
-                             f"The path size will be larger than the max file size due to URL encoding).")
-
-    # ---- Direct write to vault (if configured) ----
-    # If the user configured prefs['vault_path'] (absolute path to their vault) and enabled
-    # prefs['use_direct_write'] (bool), write the file directly and PREPEND content.
-    vault_path = prefs.get('vault_path', None)
-    use_direct = bool(prefs.get('use_direct_write', False))
-    if vault_path and use_direct:
-        rel_path = obsidian_data.get("file", "")
-        # file paths in obsidian_data use forward slashes to indicate folders: "Folder/Sub/file"
-        parts = [p for p in rel_path.split("/") if p != ""]
-        if not parts:
-            raise RuntimeError("Invalid note file path for direct write")
-        filename = parts[-1]
-        # ensure .md extension
-        if not filename.lower().endswith(".md"):
-            filename = filename + ".md"
-        subdirs = parts[:-1]
-        target_dir = os.path.join(
-            vault_path, *subdirs) if subdirs else vault_path
-        os.makedirs(target_dir, exist_ok=True)
-        target_path = os.path.join(target_dir, filename)
-
-        content = obsidian_data.get("content", "") or ""
-
-        # always performs a PREPEND-style write. To provide the user's desired semantics:
-        # - If prefs['prepend_on_write'] is True => user wants newest at top -> send in natural order.
-        # - If prefs['prepend_on_write'] is False (default, append semantics) => send in reverse order so repeated
-        #   prepends produce chronological append behavior.
-        use_direct = bool(prefs.get('use_direct_write', False))
-        vault_set = bool(prefs.get('vault_path', None))
-        prepend = bool(prefs.get('prepend_on_write', False))
-        should_reverse = False
-        if use_direct and vault_set:
-            logger.debug(
-                f"Direct write enabled. prepend_on_write={prefs.get('prepend_on_write')}")
-            should_reverse = not prepend  # reverse for append semantics
-
-        logger.debug(
-            f"Sending {len(content)} content to Obsidian . args: use_direct={use_direct}, vault_set={vault_set}, should_reverse={should_reverse}")
-        if should_reverse:
-            content = reverse_highlight_sections(content)
+                result = os.system(f'xdg-open \"{uri}\"')
+                if result != 0:
+                    raise H2OURIError(
+                        f"xdg-open command failed with exit code {result}",
+                        uri_length=len(uri)
+                    )
         else:
-            content = content
+            success = webbrowser.open(uri)
+            if not success:
+                raise H2OURIError(
+                    "Failed to open URI. Please ensure Obsidian is installed and the vault exists.",
+                    uri_length=len(uri)
+                )
+    except H2OURIError:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error opening URI")
+        raise H2OURIError(
+            f"Unexpected error opening URI: {str(e)}",
+            uri_length=len(uri)
+        )
 
-        logger.debug(
-            f"content = {content}; should_reverse = {should_reverse},iter_notes = {content}")
 
-        # Always perform a prepend-style write (content + existing).
-        # Ordering (append vs prepend semantics) is controlled by the caller (HighlightSender.send)
-        existing = ""
-        if os.path.exists(target_path):
+def _send_via_direct_write(obsidian_data: Dict[str, str]) -> None:
+    """
+    通过直接写入文件的方式发送笔记到 Obsidian vault
+
+    参数:
+        obsidian_data: 包含 'file' 和 'content' 的数据字典
+
+    异常:
+        H2ODirectWriteError: 当写入失败时
+    """
+    logger = _get_h2o_logger()
+    vault_path = prefs.get('vault_path', None)
+    if not vault_path:
+        raise H2ODirectWriteError(
+            "Vault path is not configured. Please set the 'Vault Path' in plugin settings.",
+            file_path=""
+        )
+
+    rel_path = obsidian_data.get("file", "")
+    parts = [p for p in rel_path.split("/") if p != ""]
+    if not parts:
+        raise H2ODirectWriteError(
+            "Invalid note file path. Please check the note title format.",
+            file_path=rel_path
+        )
+
+    filename = parts[-1]
+    if not filename.lower().endswith(".md"):
+        filename = filename + ".md"
+    subdirs = parts[:-1]
+    target_dir = os.path.join(vault_path, *subdirs) if subdirs else vault_path
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except OSError as e:
+        raise H2ODirectWriteError(
+            f"Failed to create directory '{target_dir}': {str(e)}",
+            file_path=target_dir,
+            original_error=e
+        )
+
+    target_path = os.path.join(target_dir, filename)
+
+    content = obsidian_data.get("content", "") or ""
+    prepend = bool(prefs.get('prepend_on_write', False))
+
+    logger.debug(f"Direct write to {target_path}, prepend={prepend}, content_len={len(content)}")
+
+    existing = ""
+    file_existed = os.path.exists(target_path)
+    if file_existed:
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+        except UnicodeDecodeError:
+            logger.warning("Failed to read existing note %s as utf-8, trying latin-1", target_path)
             try:
-                with open(target_path, "r", encoding="utf-8") as f:
+                with open(target_path, "r", encoding="latin-1") as f:
                     existing = f.read()
-            except Exception:
-                logger.warning(
-                    "Failed to read existing note %s as utf-8, trying latin-1", target_path)
-                try:
-                    with open(target_path, "r", encoding="latin-1") as f:
-                        existing = f.read()
-                except Exception:
-                    logger.exception(
-                        "Failed to read existing note %s", target_path)
-                    existing = ""
+            except Exception as e:
+                logger.exception("Failed to read existing note %s", target_path)
+                raise H2ODirectWriteError(
+                    f"Failed to read existing note '{target_path}': {str(e)}",
+                    file_path=target_path,
+                    original_error=e
+                )
+        except Exception as e:
+            logger.exception("Failed to read existing note %s", target_path)
+            raise H2ODirectWriteError(
+                f"Failed to read existing note '{target_path}': {str(e)}",
+                file_path=target_path,
+                original_error=e
+            )
 
-        # determine write order based on config: prepend (top) or append (bottom)
+    note_header_format = prefs.get("note_header_format", "")
+    logger.debug(f"file_existed={file_existed}, note_header_format len={len(note_header_format)}, header_data={obsidian_data.get('header_data', {})}")
+    if not file_existed and note_header_format and note_header_format.strip():
+        header_data = obsidian_data.get("header_data", {})
+        if header_data:
+            try:
+                note_header = note_header_format.format_map(SafeDict(**header_data))
+                logger.debug(f"Generated note_header: {repr(note_header[:200])}")
+                if prepend:
+                    content = note_header + "\n" + content
+                else:
+                    existing = note_header + "\n"
+                logger.info("Added note header to new file %s", target_path)
+            except Exception as e:
+                logger.warning("Failed to format note header: %s", str(e))
+        else:
+            logger.warning("header_data is empty, skipping note header")
+
+    try:
+        if prepend:
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(content + existing)
+            logger.info("Wrote note to %s (prepended)", target_path)
+        else:
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(existing + content)
+            logger.info("Wrote note to %s (appended)", target_path)
+    except UnicodeEncodeError as e:
+        logger.exception("Failed to write note to %s", target_path)
         try:
             if prepend:
-                with open(target_path, "w", encoding="utf-8") as f:
+                with open(target_path, "w", encoding="utf-8", errors="replace") as f:
                     f.write(content + existing)
-                logger.info("Wrote note to %s (prepended)", target_path)
             else:
-                with open(target_path, "w", encoding="utf-8") as f:
+                with open(target_path, "w", encoding="utf-8", errors="replace") as f:
                     f.write(existing + content)
-                logger.info("Wrote note to %s (appended)", target_path)
-        except Exception:
-            logger.exception("Failed to write note to %s", target_path)
-            # final fallback: write ignoring errors with same prepend/append behavior
-            try:
-                if prepend:
-                    with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
-                        f.write(content + existing)
-                else:
-                    with open(target_path, "w", encoding="utf-8", errors="ignore") as f:
-                        f.write(existing + content)
-                logger.info(
-                    "Wrote note to %s with errors ignored", target_path)
-            except Exception:
-                logger.exception(
-                    "Final fallback write also failed for %s", target_path)
+            logger.info("Wrote note to %s with some characters replaced", target_path)
+        except Exception as fallback_e:
+            raise H2ODirectWriteError(
+                f"Failed to write note to '{target_path}': {str(fallback_e)}",
+                file_path=target_path,
+                original_error=fallback_e
+            )
+    except Exception as e:
+        raise H2ODirectWriteError(
+            f"Failed to write note to '{target_path}': {str(e)}",
+            file_path=target_path,
+            original_error=e
+        )
 
-        # optionally open the file in Obsidian after writing if user wants
-        if prefs.get("open_obsidian_after_write", False):
-            # open vault and file — use obsidian URI to reveal/open
-            vault_name = prefs.get("vault_name", "")
-            uri_file = rel_path
-            try:
-                webbrowser.open(
-                    f"obsidian://open?vault={quote(vault_name)}&file={quote(uri_file)}")
-            except Exception:
-                pass
+    if prefs.get("open_obsidian_after_write", False):
+        vault_name = prefs.get("vault_name", "")
+        try:
+            webbrowser.open(f"obsidian://open?vault={quote(vault_name)}&file={quote(rel_path)}")
+        except Exception as e:
+            logger.warning("Failed to open Obsidian after write: %s", str(e))
+            pass
 
-        return
-    # ---- end direct write path ----
 
-    # build base (without content) to estimate overhead
+def _send_via_uri(obsidian_data: Dict[str, str]) -> None:
+    """
+    通过 Obsidian URI 协议发送笔记
+
+    参数:
+        obsidian_data: 包含 'vault', 'file', 'content' 的数据字典
+    """
+    logger = _get_h2o_logger()
     base_items = {k: v for k, v in obsidian_data.items() if k != "content"}
     base_encoded = urlencode(base_items, quote_via=quote)
     base_uri_prefix = "obsidian://new?" + base_encoded + "&content="
-    # encode content to check length
     content = obsidian_data.get("content", "") or ""
     uri = "obsidian://new?" + urlencode(obsidian_data, quote_via=quote)
 
@@ -222,28 +294,17 @@ def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
         _open_uri(uri)
         return
 
-    # If too long, split content into chunks. Make chunk size conservative but not tiny to avoid single-char chunks.
     base_len = len("obsidian://new?" + base_encoded)
-    # 50 bytes margin for safety
-    allowed_for_content = max(100, WINDOWS_URI_LIMIT - base_len - 50)
-    # worst-case expansion: '%xx' => ~3x, be conservative
-    # ensure a reasonable minimum chunk size so we don't split to single characters
-    MIN_CHUNK_CHARS = 500
+    allowed_for_content = max(100, WINDOWS_URI_LIMIT - base_len - URI_SAFETY_MARGIN)
     approx_chunk_chars = max(MIN_CHUNK_CHARS, allowed_for_content // 3)
 
-    # split content into approximate-char chunks (preserve Python str characters)
-    chunks = [content[i:i+approx_chunk_chars]
-              for i in range(0, len(content), approx_chunk_chars)]
+    chunks = [content[i:i+approx_chunk_chars] for i in range(0, len(content), approx_chunk_chars)]
 
-    # If even a single chunk is still too large after encoding, further reduce chunk size
     final_chunks = []
     for ch in chunks:
         enc = quote(ch, safe='')
         if len(base_uri_prefix) + len(enc) > WINDOWS_URI_LIMIT:
-            # reduce chunk until it fits; start from a smaller but still reasonable sub_size
-            sub_size = max(50, len(ch) * (WINDOWS_URI_LIMIT //
-                           (len(base_uri_prefix) + len(enc))))
-            # ensure we shrink gradually
+            sub_size = max(MIN_SUB_CHUNK_SIZE, len(ch) * (WINDOWS_URI_LIMIT // (len(base_uri_prefix) + len(enc))))
             start = 0
             while start < len(ch):
                 part = ch[start:start+sub_size]
@@ -251,25 +312,50 @@ def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
                     final_chunks.append(part)
                     start += sub_size
                 else:
-                    # shrink more if still too large
                     sub_size = max(1, sub_size // 2)
         else:
             final_chunks.append(ch)
 
-    # send each chunk as an append to the same file.
-    # use a slightly longer pause so Obsidian has time to process the first creation before append calls.
-    PAUSE_BETWEEN_CHUNKS = 0.15
-
     for idx, part in enumerate(final_chunks):
         odata = dict(base_items)
-        file_name = obsidian_data.get("file", "")
-        odata["file"] = file_name
+        odata["file"] = obsidian_data.get("file", "")
         odata["content"] = part
-        # ensure append=true for all parts so they end up in same file
         odata["append"] = "true"
         uri_part = "obsidian://new?" + urlencode(odata, quote_via=quote)
         _open_uri(uri_part)
         time.sleep(PAUSE_BETWEEN_CHUNKS)
+
+
+def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
+    """
+    发送笔记到 Obsidian
+
+    根据配置选择直接写入文件或通过 URI 协议发送
+
+    参数:
+        obsidian_data: 应包含 'vault', 'file', 'content' 等键值
+
+    参考: https://help.obsidian.md/Advanced+topics/Using+obsidian+URI#Action+new
+    """
+    logger = _get_h2o_logger()
+    vault_path = prefs.get('vault_path', None)
+    use_direct = bool(prefs.get('use_direct_write', False))
+
+    if vault_path and use_direct:
+        try:
+            _send_via_direct_write(obsidian_data)
+            return
+        except Exception as e:
+            logger.error(f"Direct write failed, falling back to URI: {e}")
+
+    try:
+        _send_via_uri(obsidian_data)
+    except ValueError as e:
+        raise ValueError(
+            f"send_item_to_obsidian: '{e}' in note '{obsidian_data.get('file', '')}'.\n\n"
+            f"If this error says that the filepath is too long, try reducing the max file size in "
+            f"the Highlights to Obsidian config."
+        )
 
 
 def format_data(dat: Dict[str, str], title: str, body: str, no_notes_body: str = None) -> List[str]:
@@ -391,43 +477,60 @@ def make_highlight_format_dict(data: Dict, calibre_library: str) -> Dict[str, st
     :param calibre_library: name of library book is found in. used for making a url to the highlight.
     :return: dict containing all highlight-related formatting options.
     """
+    logger = _get_h2o_logger()
 
     def format_blockquote(text: str) -> str:
+        """格式化为 Markdown 引用块"""
         return "> " + text.replace("\n", "\n> ")
+
+    def format_callout_quote(text: str) -> str:
+        """格式化为 Obsidian Callout 引用块"""
+        return "> [!quote]\n> " + text.replace("\n", "\n> ")
+
+    def format_notes(text: str) -> str:
+        """
+        格式化用户注释，处理空行问题
+
+        将注释内容格式化为引用块样式，确保空行不会打断格式
+        """
+        if not text:
+            return ""
+        lines = text.split("\n")
+        formatted_lines = []
+        for line in lines:
+            if line.strip() == "":
+                formatted_lines.append(">")
+            else:
+                formatted_lines.append("> " + line)
+        return "\n".join(formatted_lines)
 
     annot = data["annotation"]
 
-    # format is calibre://view-book/<Library_Name>/<book_id>/<book_format>?open_at=<location>
-    # for example, calibre://view-book/Calibre_Library/39/EPUB?open_at=epubcfi(/8/2/4/84/1:184)
-    # todo: right now, opening two different links from the same book opens two different viewer windows,
-    # make it instead go to the right location in the already-open window
     url_format = "calibre://view-book/{library}/{book_id}/{book_format}?open_at=epubcfi({location})"
     url_args = {
         "library": calibre_library.replace(" ", "_"),
         "book_id": data["book_id"],
         "book_format": data["format"],
-        # the algorithm for this, "/{2 * (spine_index + 1)}", is taken from:
-        # read_book.annotations.AnnotationsManager.cfi_for_highlight(uuid, spine_index)
-        # https://github.com/kovidgoyal/calibre/blob/master/src/pyj/read_book/annotations.pyj#L249
-        # i didn't import the algorithm from calibre because it was too inconvenient to figure out how
-        #
-        # unfortunately, this doesn't work without the spine index thing. the location is missing a number.
-        # it should be, for example /8/2/4/84/1:184, but instead, data["start_cfi"] is /2/4/84/1:184.
-        # the first number in the cfi address has to be manually calculated.
         "location": "/" + str((annot["spine_index"] + 1) * 2) + annot["start_cfi"],
     }
 
+    raw_notes = annot["notes"] if "notes" in annot else ""
+    raw_highlight = annot["highlighted_text"]
+    uuid_short = annot["uuid"][:8] if len(annot["uuid"]) >= 8 else annot["uuid"]
+
+    notes_quoted_result = format_notes(raw_notes)
+
     highlight_format = {
-        "highlight": annot["highlighted_text"],  # highlighted text
-        # block-quoted highlight
-        "blockquote": format_blockquote(annot["highlighted_text"]),
-        # user's notes on this highlight
-        "notes": annot["notes"] if "notes" in annot else "",
-        # calibre:// url to open ebook viewer to this highlight
+        "highlight": raw_highlight,
+        "highlight_text": raw_highlight,
+        "blockquote": format_blockquote(raw_highlight),
+        "callout_quote": format_callout_quote(raw_highlight),
+        "notes": raw_notes,
+        "notes_quoted": notes_quoted_result,
         "url": url_format.format(**url_args),
-        # epub cfi location of this highlight
         "location": url_args["location"],
-        "uuid": annot["uuid"],  # highlight's ID in calibre
+        "uuid": annot["uuid"],
+        "highlight_id": uuid_short,
     }
 
     return highlight_format
@@ -441,45 +544,57 @@ def make_book_format_dict(data: Dict, book_titles_authors: Dict[int, Dict[str, s
     :return: dict containing all book-related formatting options
     """
     title_authors = book_titles_authors.get(
-        # dict with {"title": str, "authors": Tuple[str]}
         int(data["book_id"]), {})
 
+    book_title = title_authors.get("title", "Untitled")
+    authors_tuple = title_authors.get("authors", ("Unknown",))
+    authors_str = ", ".join(authors_tuple) if isinstance(authors_tuple, tuple) else str(authors_tuple)
+
+    annot = data.get("annotation", {})
+    chapter = annot.get("toc_family_titles", [])
+    chapter_str = " > ".join(chapter) if chapter else ""
+
     format_options = {
-        "title": title_authors.get("title", "Untitled"),  # title of book
-        # todo: add "chapter" option
-        # authors of book
-        "authors": title_authors.get("authors", ("Unknown",)),
+        "title": book_title,
+        "authors": authors_tuple,
+        "authors_str": authors_str,
         "bookid": data["book_id"],
+        "chapter": chapter_str,
     }
 
     return format_options
 
 
-def make_sent_format_dict(total_sent, book_sent, highlight_sent) -> Dict[str, str]:
+def make_sent_format_dict(total_sent: int, book_sent: int, highlight_sent: int) -> 'SafeDict':
     """
-    inputs will be converted to strings.
+    创建发送统计格式化字典
 
-    :param total_sent: total number of highlights being sent
-    :param book_sent: total number of highlights being sent for this book
-    :param highlight_sent: this highlight's position in the highlights being sent to this book, e.g. 5 if it's
-     the fifth highlight.
-    :return: dict containing a format option for each of the params
+    参数:
+        total_sent: 总发送高亮数
+        book_sent: 本书发送高亮数
+        highlight_sent: 当前高亮序号
+
+    返回:
+        SafeDict 包含 totalsent, booksent, highlightsent 键
     """
     sent_dict = SafeDict()
-    sent_dict["totalsent"] = str(total_sent)  # total highlights sent
-    sent_dict["booksent"] = str(book_sent)  # highlights for this book
-    sent_dict["highlightsent"] = str(
-        highlight_sent)  # position of this highlight
-
+    sent_dict["totalsent"] = str(total_sent)
+    sent_dict["booksent"] = str(book_sent)
+    sent_dict["highlightsent"] = str(highlight_sent)
     return sent_dict
 
 
-def make_format_dict(data, calibre_library: str, book_titles_authors: Dict[int, Dict[str, str]]) -> Dict[str, str]:
+def make_format_dict(data: Dict, calibre_library: str, book_titles_authors: Dict[int, Dict[str, str]]) -> 'SafeDict':
     """
-    :param data: json object of a calibre highlight
-    :param calibre_library: name of the calibre library, to make a url to the highlight
-    :param book_titles_authors: dictionary mapping book ids to {"title": title, "authors": authors}
-    :return: dict[str, str] containing formatting options
+    创建完整的格式化字典
+
+    参数:
+        data: calibre 高亮数据对象
+        calibre_library: calibre 库名称，用于构建 URL
+        book_titles_authors: 书籍 ID 到标题和作者的映射字典
+
+    返回:
+        SafeDict 包含所有格式化选项
     """
 
     # formatting options are based on https://github.com/jplattel/obsidian-clipper
@@ -504,42 +619,46 @@ def make_format_dict(data, calibre_library: str, book_titles_authors: Dict[int, 
 
 
 class SafeDict(dict):
-    def __init__(self, **kwargs):
-        """if a key is not found in this dict, will return the key with {curly brackets}.
+    """
+    安全字典，当键不存在时返回带花括号的键名而非抛出异常
 
-        useful for making str.format() ignore invalid keys without changing the input string."""
+    用于 str.format() 时忽略无效的占位符
+    """
+    def __init__(self, **kwargs: str):
         super().__init__(kwargs)
 
-    def __missing__(self, key):
+    def __missing__(self, key: str) -> str:
         return "{" + key + "}"
 
 
 class BookData:
-    # todo: refactor: make a BookData class to store data of book title(s), highlight, length, count, etc
-    #  BookData: fields for title, header, list of notes and sort keys or dict of {sort_key: note}?
-    #            functions for formatting title, header, etc
-    #  BookList: holds a dict of string titles of books with a BookData for each one.
-    #            functions for add(title, BookData), split long dataset into multiple books, get base title
-    #                of a split book, etc
-    def __init__(self, title: str, header: str = None, notes: List[List[Union[str, Any]]] = None):
-        """
+    """
+    存储单本书籍的高亮数据
 
-        :param title: book's title
-        :param header: header to be used when notes are sent to Obsidian
-        :param notes: list of [note_content, sort_key]
-        """
+    属性:
+        title: 笔记标题
+        header: 发送时添加的头部内容
+        notes: 笔记列表，每项为 [内容, 排序键]
+        header_data: 用于生成笔记头部的数据（书籍元数据）
+    """
 
+    def __init__(self, title: str, header: str = "", notes: List[List[Union[str, Any]]] = None, header_data: Dict = None):
+        """
+        参数:
+            title: 笔记标题
+            header: 发送到 Obsidian 时使用的头部
+            notes: 笔记列表，每项为 [note_content, sort_key]
+            header_data: 用于生成笔记头部的数据
+        """
         self._title = title
         self._header = header
+        self._header_data: Dict = header_data or {}
         if notes is not None:
-            self.notes: List[List[Union[str, Any]]] = list(
-                sorted(notes, key=lambda n: n[1]))
+            self.notes: List[List[Union[str, Any]]] = list(sorted(notes, key=lambda n: n[1]))
         else:
-            # List[List[note:str, sort_key:Any]]
             self.notes: List[List[Union[str, Any]]] = []
 
-    def __len__(self):
-        """ number of notes that this book has """
+    def __len__(self) -> int:
         return len(self.notes)
 
     @property
@@ -548,10 +667,6 @@ class BookData:
 
     @title.setter
     def title(self, title: str) -> None:
-        """
-        warning: when possible, use BookList's update_title() instead. if you update the title directly, BookList
-         will keep the old title as the key in its dict of BookData objects.
-        """
         self._title = title
 
     @property
@@ -562,23 +677,33 @@ class BookData:
     def header(self, header: str) -> None:
         self._header = header
 
+    @property
+    def header_data(self) -> Dict:
+        return self._header_data
+
+    @header_data.setter
+    def header_data(self, header_data: Dict) -> None:
+        self._header_data = header_data
+
     def add_note(self, note: str, sort_key: Any = None) -> None:
         """
-        :param note: text of note to add to this book's notes
-        :param sort_key: sort key to use when merging book's notes into a single string
-        :return: none
+        添加笔记到列表
+
+        参数:
+            note: 笔记内容
+            sort_key: 排序键，用于合并时排序
         """
         self.insort_note([note, sort_key])
 
     def update_note(self, idx: int, new_note: str) -> None:
+        """更新指定索引的笔记内容"""
         self.notes[idx][0] = new_note
 
-    def insort_note(self, note: List[Union[str, Any]]):
-        """ copied and modified from bisect.insort_right(...)
+    def insort_note(self, note: List[Union[str, Any]]) -> None:
+        """
+        按排序键插入笔记，保持列表有序
 
-        Insert note into self.notes, and keep it sorted based on sort_key.
-        Assumes that the note is not already in self.notes.
-        If sort_key is None, append the note to self.notes.
+        如果 sort_key 为 None，则追加到末尾
         """
         sort_key = note[1]
         if sort_key is None:
@@ -596,96 +721,95 @@ class BookData:
 
     def make_sendable_notes(self, max_size: int = -1, copy_header: bool = False) -> Iterable[Tuple[str, str]]:
         """
-        merges this book's notes into a single string.
+        合并本书的笔记为可发送的字符串
 
-        This limits the length of merged note contents to max_size. If the length exceeds this, extra
-        highlights will use a different title, e.g. "The Book", "The Book (1)", etc
+        参数:
+            max_size: 笔记最大允许大小，-1 表示无限制
+            copy_header: 分割时是否在每个笔记中复制头部
 
-        :param max_size: maximum allowed size of a note (notes might be longer after headers are added)
-        :param copy_header: if a single note is split into multiple, should the header be copied into each one,
-        or should only the first note have a header?
-        :return: yields an iterable of tuples of (title, contents) pairs
+        返回:
+            生成器，产出 (标题, 内容) 元组
+
+        异常:
+            RuntimeError: 当单个笔记超过最大大小时
         """
-
         if max_size == -1:
             yield self.title, self.header + "".join([n[0] for n in self.notes])
             return
 
-        _accum = ""  # accumulated notes to be sent
-        _sent = 0  # number of notes that have been returned so far
+        _accum = ""
+        _sent = 0
 
         for idx in range(len(self)):
             header = self.header if copy_header or _sent == 0 else ""
             note_size = len(header) + len(_accum)
 
             if len(self.notes[idx][0]) + len(header) > max_size:
-                # this handles the case of when the header + a single note is bigger than max note size. also catches
-                # cases where the note by itself is too long.
-                raise RuntimeError(f"NOTE EXCEEDS MAX LENGTH OF {max_size} CHARACTERS: "
-                                   f"'{self.title[:30]}', NOTE TEXT: '{self.notes[idx][0][:500]}'")
+                raise RuntimeError(
+                    f"NOTE EXCEEDS MAX LENGTH OF {max_size} CHARACTERS: "
+                    f"'{self.title[:30]}', NOTE TEXT: '{self.notes[idx][0][:500]}'"
+                )
 
             if note_size + len(self.notes[idx][0]) > max_size:
-                title = self.title if _sent == 0 else self.title + \
-                    f" ({_sent})"
-
+                title = self.title if _sent == 0 else self.title + f" ({_sent})"
                 yield title, header + _accum
-
                 _accum = self.notes[idx][0]
                 _sent += 1
             else:
                 _accum += self.notes[idx][0]
 
-        # since the note is added to _accum after yielding, we end up with extra notes in _accum that haven't been
-        # sent yet. so we send them here.
         title = self.title if _sent == 0 else self.title + f" ({_sent})"
         header = self.header if copy_header or _sent == 0 else ""
         yield title, header + _accum
 
 
 class BookList(dict):
-    # todo: refactor: make a BookData class to store data of book title(s), highlight, length, count, etc
-    #  BookData: fields for title, header, list of notes and sort keys or dict of {sort_key: note}?
-    #            functions for formatting title, header, etc
-    #  BookList: holds a dict of string titles of books with a BookData for each one.
-    #            functions for add(title, note), split long dataset into multiple books, get base title
-    #                of a split book, create headers when adding new notes, function to apply sent amount formatting
+    """
+    书籍列表，存储 {书籍标题: BookData对象} 的字典
+
+    用于管理多本书的高亮数据，支持添加、更新、分割等操作
+    """
+
     def __init__(self):
-        """
-        this object is a dict of {book title: BookData object}
-        """
         super().__init__()
-        self.base_titles: Dict[str, str] = {}  # {full_title: base_title}
+        self.base_titles: Dict[str, str] = {}
 
-    def add_book(self, book: BookData):
+    def add_book(self, book: BookData) -> None:
         """
-        adds a book to this BookList. If the book is already in this BookList, the old version is replaced.
+        添加书籍到列表，如已存在则替换
 
-        :param book: a BookData object to add to the book list
-        :return: none
+        参数:
+            book: BookData 对象
         """
         self[book.title] = book
 
-    def add_note(self, title: str, note: str, sort_key: Any = 0) -> None:
+    def add_note(self, title: str, note: str, sort_key: Any = 0, header_data: Dict = None) -> None:
         """
-        adds a note to this book list. if the title already exists, the note is added to the appropriate BookData.
-        otherwise, a new BookData will be created.
+        添加笔记到列表
 
-        :param title: title of the note being added
-        :param note: contents of the note being added
-        :param sort_key: used to sort the note within its file when sending to obsidian
-        :return: none
+        参数:
+            title: 笔记标题
+            note: 笔记内容
+            sort_key: 排序键
+            header_data: 用于生成笔记头部的数据
         """
         if title in self:
             self[title].add_note(note, sort_key)
         else:
-            b = BookData(title)
+            b = BookData(title, header_data=header_data)
             b.add_note(note, sort_key)
             self[title] = b
 
     def update_title(self, old_title: str, new_title: str) -> None:
         """
-        updates the title of the specified book if the book is in this BookList. If it's not in this BookList,
-        raises an error.
+        更新书籍标题
+
+        参数:
+            old_title: 旧标题
+            new_title: 新标题
+
+        异常:
+            KeyError: 当旧标题不存在时
         """
         if old_title in self:
             self[new_title] = self[old_title]
@@ -695,8 +819,14 @@ class BookList(dict):
 
     def update_header(self, book_title: str, header: str) -> None:
         """
-        sets the specified book's header to the given value
-        :return: none
+        设置指定书籍的头部内容
+
+        参数:
+            book_title: 书籍标题
+            header: 头部内容
+
+        异常:
+            KeyError: 当标题不存在时
         """
         if book_title in self:
             self[book_title].header = header
@@ -705,10 +835,14 @@ class BookList(dict):
 
     def make_sendable_notes(self, max_size: int = -1, copy_header: bool = False) -> Iterable[Tuple[str, str]]:
         """
-        :param max_size: maximum allowed size of a note (notes might be longer after headers are added)
-        :param copy_header: if a single note is split into multiple, should the header be copied into each one,
-        or should only the first note have a header?
-        :return: yields an iterable of tuples containing (title, body) of notes to be sent to Obsidian.
+        生成所有书籍的可发送笔记
+
+        参数:
+            max_size: 笔记最大允许大小
+            copy_header: 分割时是否复制头部
+
+        返回:
+            生成器，产出 (标题, 内容) 元组
         """
         for b in self:
             for n in self[b].make_sendable_notes(max_size, copy_header):
@@ -716,29 +850,30 @@ class BookList(dict):
 
     def apply_sent_amount_format(self, should_apply: Tuple[bool, bool, bool]) -> None:
         """
-        applies formatting options {totalsent}, {booksent}, {highlightsent}.
-        :return:
+        应用发送统计格式化选项
+
+        参数:
+            should_apply: 元组 (标题, 正文, 头部)，指示各部分是否需要格式化
         """
         total_highlights = sum([len(self[title]) for title in self])
         for title in self:
             book_highlights = len(self[title])
 
-            if should_apply[0]:  # title
+            if should_apply[0]:
                 self.apply_sent_title(title, book_highlights, total_highlights)
-
-            if should_apply[1]:  # body
+            if should_apply[1]:
                 self.apply_sent_body(title, book_highlights, total_highlights)
+            if should_apply[2]:
+                self.apply_sent_headers(title, book_highlights, total_highlights)
 
-            if should_apply[2]:  # header
-                self.apply_sent_headers(
-                    title, book_highlights, total_highlights)
-
-    def apply_sent_title(self, _title: str, _book_highlights: int, _total_highlights: int):
+    def apply_sent_title(self, _title: str, _book_highlights: int, _total_highlights: int) -> None:
         """
-        :param _title: title of the book whose title you want to apply sent amount formats to
-        :param _book_highlights: Dict[title, int] that has the amount of highlights being sent to each book.
-        :param _total_highlights: total number of highlights being sent
-        :return: none
+        应用发送统计格式化到标题
+
+        参数:
+            _title: 书籍标题
+            _book_highlights: 本书高亮数
+            _total_highlights: 总高亮数
         """
         fmt = make_sent_format_dict(_total_highlights, _book_highlights, -1)
         new_title = format_single(fmt, _title)
@@ -746,94 +881,109 @@ class BookList(dict):
         self[new_title] = self[_title]
         del self[_title]
 
-    def apply_sent_body(self, _title: str, _book_highlights: int, _total_highlights: int):
-        for h in range(len(self[_title])):
-            # since BookData keeps its note list sorted, it's easy to know how many have been sent before this
-            fmt = make_sent_format_dict(
-                _total_highlights, _book_highlights, h + 1)
-            self[_title].update_note(
-                h, format_single(fmt, self[_title].notes[h][0]))
+    def apply_sent_body(self, _title: str, _book_highlights: int, _total_highlights: int) -> None:
+        """
+        应用发送统计格式化到正文
 
-    def apply_sent_headers(self, _title: str, _book_highlights: int, _total_highlights: int):
+        参数:
+            _title: 书籍标题
+            _book_highlights: 本书高亮数
+            _total_highlights: 总高亮数
+        """
+        for h in range(len(self[_title])):
+            fmt = make_sent_format_dict(_total_highlights, _book_highlights, h + 1)
+            self[_title].update_note(h, format_single(fmt, self[_title].notes[h][0]))
+
+    def apply_sent_headers(self, _title: str, _book_highlights: int, _total_highlights: int) -> None:
+        """
+        应用发送统计格式化到头部
+
+        参数:
+            _title: 书籍标题
+            _book_highlights: 本书高亮数
+            _total_highlights: 总高亮数
+        """
         fmt = make_sent_format_dict(_total_highlights, _book_highlights, -1)
         self[_title].header = format_single(fmt, self[_title].header)
 
 
 class HighlightSender:
+    """
+    高亮发送器
+
+    负责格式化高亮数据并发送到 Obsidian
+    """
 
     def __init__(self):
-        # set defaults
-        self.library_name = prefs.defaults['library_name']
-        self.vault_name = prefs.defaults['vault_name']
-        self.title_format = prefs.defaults['title_format']
-        self.body_format = prefs.defaults['body_format']
-        self.no_notes_format = prefs.defaults['no_notes_format']
-        self.header_format = prefs.defaults['header_format']
-        self.book_titles_authors = {}
-        self.annotations_list = []
-        self.max_file_size = -1  # -1 = unlimited
-        self.copy_header = False
-        self.sort_key = prefs.defaults['sort_key']
-        self.sleep_time = 0
+        self.library_name: str = ""
+        self.vault_name: str = prefs.defaults['vault_name']
+        self.title_format: str = prefs.defaults['title_format']
+        self.body_format: str = prefs.defaults['body_format']
+        self.no_notes_format: str = prefs.defaults['no_notes_format']
+        self.header_format: str = prefs.defaults['header_format']
+        self.book_titles_authors: Dict[int, Dict[str, str]] = {}
+        self.annotations_list: List = []
+        self.max_file_size: int = -1
+        self.copy_header: bool = False
+        self.sort_key: str = prefs.defaults['sort_key']
+        self.sleep_time: float = 0
 
-    def set_library(self, library_name: str):
+    def set_library(self, library_name: str) -> None:
         self.library_name = library_name
 
-    def set_vault(self, vault_name: str):
+    def set_vault(self, vault_name: str) -> None:
         self.vault_name = vault_name
 
-    def set_title_format(self, title_format: str):
+    def set_title_format(self, title_format: str) -> None:
         self.title_format = title_format
 
-    def set_body_format(self, body_format: str):
+    def set_body_format(self, body_format: str) -> None:
         self.body_format = body_format
 
-    def set_no_notes_format(self, no_notes_format: str):
-        """
-        sets the body format to be used for highlights that the user didn't make notes for
-        """
+    def set_no_notes_format(self, no_notes_format: str) -> None:
+        """设置无笔记高亮的正文格式"""
         self.no_notes_format = no_notes_format
 
-    def set_header_format(self, header_format: str):
-        """
-        for each file that has highlights sent to it, the header will be sent before any highlights.
-        note that this isn't once per file, if you send highlights to a file now and then again
-        to the same file later, there will be two copies of the header.
-        """
+    def set_header_format(self, header_format: str) -> None:
+        """设置头部格式"""
         self.header_format = header_format
 
-    def set_book_titles_authors(self, book_titles_authors: Dict[int, Dict[str, str]]):
+    def set_book_titles_authors(self, book_titles_authors: Dict[int, Dict[str, str]]) -> None:
         """
-        :param book_titles_authors: dictionary of {book_id: dict of {"title": book_title, "authors": book_authors}},
-         to be used for note formatting
-        """
+        设置书籍标题和作者映射
 
+        参数:
+            book_titles_authors: {book_id: {"title": 标题, "authors": 作者}}
+        """
         self.book_titles_authors = book_titles_authors
 
-    def set_annotations_list(self, annotations_list):
+    def set_annotations_list(self, annotations_list: List) -> None:
         """
-        :param annotations_list: the object returned by calibre.db.cache.Cache.new_api's all_annotations() function
+        设置高亮列表
+
+        参数:
+            annotations_list: calibre.db.cache.Cache.all_annotations() 返回的对象
         """
         self.annotations_list = annotations_list
 
-    def set_max_file_size(self, max_file_size=-1, copy_header=False):
+    def set_max_file_size(self, max_file_size: int = -1, copy_header: bool = False) -> None:
         """
-        sets the maximum size of the body of files sent to obsidian, in text characters. If a file is too long,
-        it will be split into smaller files that are under the max file size.
+        设置笔记最大大小
 
-        :param max_file_size: max file size. If -1, file size is unlimited.
-        :param copy_header: If True, the file's header will be copied to each file that the file is split into.
-        :return: none
+        参数:
+            max_file_size: 最大大小，-1 表示无限制
+            copy_header: 分割时是否复制头部
         """
         self.max_file_size = max_file_size
         self.copy_header = copy_header
 
-    def set_sort_key(self, sort_key: str):
+    def set_sort_key(self, sort_key: str) -> None:
         """
-        :param sort_key: key to use for sorting highlights. should be one of the formatting options, e.g. "timestamp",
-        "location", "highlight", etc
+        设置排序键
+
+        参数:
+            sort_key: 排序键，如 "timestamp", "location" 等
         """
-        # todo: verify that the sort key is valid
         self.sort_key = sort_key
 
     def set_sleep_time(self, sleep_time: float):
@@ -866,13 +1016,14 @@ class HighlightSender:
             header = header or (f in self.header_format)
         return title, body, header
 
-    def make_obsidian_data(self, note_file, note_content):
+    def make_obsidian_data(self, note_file, note_content, header_data: Dict = None):
         """
         limits length of note_file to 180 characters, allowing for an obsidian vault path of up to 80
         characters (Windows max path length is 260 characters).
 
         :param note_file: title of this note, including relative path
         :param note_content: body of this note
+        :param header_data: data for generating note header (book title, authors, etc.)
         :return: dictionary which includes vault name, note file/title, note contents.
         return value can be used as input for send_item_to_obsidian(). keys are "vault",
         "file", "content"
@@ -884,6 +1035,7 @@ class HighlightSender:
             "file": note_file if len(note_file) < 180 else note_file[:172] + "... " + note_file[-4:],
             "content": note_content,
             "append": "true",
+            "header_data": header_data or {},
         }
 
         return obsidian_data
@@ -941,15 +1093,16 @@ class HighlightSender:
 
         return True
 
-    def process_highlight(self, _highlight, _headers: List[str]) -> Tuple[str, Tuple[str, Any], str]:
+    def process_highlight(self, _highlight, _headers: List[str]) -> Tuple[str, Tuple[str, Any], str, Dict]:
         """
         makes formatted data for a highlight.
 
         :param _highlight: a calibre annotation object
         :param _headers: list of titles that already have headers
-        :return: (formatted_title, formatted_body, formatted_header)
+        :return: (formatted_title, formatted_body, formatted_header, header_data)
         formatted_body is a tuple with (formatted_text, sort_key)
         formatted_header is None if a header is already present in _headers.
+        header_data is dict for note header (book title, authors, etc.)
         """
         dat = make_format_dict(
             _highlight, self.library_name, self.book_titles_authors)
@@ -960,7 +1113,12 @@ class HighlightSender:
         header = None if formatted[0] in _headers else format_single(
             dat, self.header_format)
 
-        return formatted[0], (formatted[1], self.format_sort_key(dat)), header
+        header_data = {
+            "title": dat.get("title", "Untitled"),
+            "authors_str": dat.get("authors_str", "Unknown"),
+        }
+
+        return formatted[0], (formatted[1], self.format_sort_key(dat)), header, header_data
 
     def send(self, condition: Callable[[Any], bool] = lambda x: True):
         """
@@ -975,7 +1133,7 @@ class HighlightSender:
         # make formatted titles, bodies, and headers
         for highlight in highlights:
             h = self.process_highlight(highlight, headers)
-            books.add_note(h[0], h[1][0], h[1][1])
+            books.add_note(h[0], h[1][0], h[1][1], header_data=h[3])
             if h[2] is not None:
                 books.update_header(h[0], h[2])
 
@@ -984,7 +1142,9 @@ class HighlightSender:
         # todo: sometimes, if obsidian isn't already open, not all highlights get sent. probably need to send a single
         #  item then wait for obsidian to open
         for note in books.make_sendable_notes(self.max_file_size, self.copy_header):
-            send_item_to_obsidian(self.make_obsidian_data(note[0], note[1]))
+            book = books.get(note[0])
+            header_data = book.header_data if book else {}
+            send_item_to_obsidian(self.make_obsidian_data(note[0], note[1], header_data))
             time.sleep(self.sleep_time)
 
         return sum([len(b) for b in books.values()])

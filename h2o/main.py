@@ -4,7 +4,7 @@ from calibre_plugins.highlights_to_obsidian.button_actions import (help_menu, se
                                                                    send_all_highlights, resend_highlights,
                                                                    send_new_selected_highlights, send_all_selected_highlights)
 from calibre_plugins.highlights_to_obsidian.config import prefs
-from calibre_plugins.highlights_to_obsidian.__init__ import version
+from calibre_plugins.highlights_to_obsidian.version import version
 
 
 class MainDialog(QDialog):

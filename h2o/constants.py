@@ -1,0 +1,18 @@
+"""
+H2O 插件常量定义
+
+集中管理所有魔法数字和配置常量
+"""
+
+WINDOWS_URI_LIMIT: int = 30000
+MIN_CHUNK_CHARS: int = 500
+PAUSE_BETWEEN_CHUNKS: float = 0.15
+MAX_NOTE_TITLE_LENGTH: int = 180
+URI_SAFETY_MARGIN: int = 50
+MIN_SUB_CHUNK_SIZE: int = 50
+
+DEFAULT_MAX_NOTE_SIZE: int = 20000
+DEFAULT_SLEEP_SECS: float = 0.1
+
+TIME_FORMAT: str = "%Y-%m-%d %H:%M:%S"
+TIMESTAMP_FORMAT: str = "%Y-%m-%dT%H:%M:%S"

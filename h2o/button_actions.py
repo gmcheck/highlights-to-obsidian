@@ -1,8 +1,12 @@
 from qt.core import QDialog, QVBoxLayout, QPushButton, QMessageBox, QLabel
-from calibre.gui2 import info_dialog
+from calibre.gui2 import info_dialog, error_dialog
 from calibre.library import current_library_name
 from calibre_plugins.highlights_to_obsidian.config import prefs
-from calibre_plugins.highlights_to_obsidian.highlight_sender import HighlightSender
+from calibre_plugins.highlights_to_obsidian.highlight_sender import HighlightSender, parse_highlight_timestamp
+from calibre_plugins.highlights_to_obsidian.constants import TIME_FORMAT
+from calibre_plugins.highlights_to_obsidian.exceptions import (
+    H2OError, H2OSendError, H2OURIError, H2ODirectWriteError
+)
 from time import strptime, strftime, mktime, gmtime
 
 
@@ -45,12 +49,13 @@ def send_highlights(parent, db, condition=lambda x: True, update_send_time=True)
         _sender.set_title_format(prefs["title_format"])
         _sender.set_body_format(prefs["body_format"])
         _sender.set_no_notes_format(prefs["no_notes_format"])
-        _sender.set_header_format(prefs["header_format"] if prefs["use_header"] else "")
+        _sender.set_header_format(prefs["header_format"])
         _sender.set_book_titles_authors(book_ids_to_titles_authors(db))
         _sender.set_sort_key(prefs["sort_key"])
         _sender.set_sleep_time(prefs["sleep_secs"])
-        if prefs['use_max_note_size']:
-            _sender.set_max_file_size(int(prefs['max_note_size']), prefs['copy_header'])
+        max_size = prefs.get('max_note_size', 20000)
+        if max_size > 0:
+            _sender.set_max_file_size(max_size, prefs['copy_header'])
 
         """ all_annotations() and all_annotation_users()
          https://github.com/kovidgoyal/calibre/blob/master/src/calibre/db/cache.py
@@ -63,16 +68,63 @@ def send_highlights(parent, db, condition=lambda x: True, update_send_time=True)
         return _sender
 
     sender = make_sender()
-    amt = sender.send(condition=condition)
+    try:
+        amt = sender.send(condition=condition)
+    except H2ODirectWriteError as e:
+        error_dialog(
+            parent,
+            "Direct Write Error",
+            f"Failed to write note to Obsidian vault.\n\n"
+            f"Error: {str(e)}\n\n"
+            f"File path: {e.file_path}\n\n"
+            f"Please check your Vault Path setting in plugin configuration.",
+            show=True
+        )
+        return 0
+    except H2OURIError as e:
+        error_dialog(
+            parent,
+            "URI Error",
+            f"Failed to send note via Obsidian URI.\n\n"
+            f"Error: {str(e)}\n\n"
+            f"URI length: {e.uri_length} characters\n\n"
+            f"Please ensure Obsidian is running and the vault exists.",
+            show=True
+        )
+        return 0
+    except H2OSendError as e:
+        error_dialog(
+            parent,
+            "Send Error",
+            f"Failed to send highlight to Obsidian.\n\n"
+            f"Error: {str(e)}\n\n"
+            f"Note title: {e.note_title}",
+            show=True
+        )
+        return 0
+    except H2OError as e:
+        error_dialog(
+            parent,
+            "H2O Plugin Error",
+            f"An error occurred in the H2O plugin.\n\n"
+            f"Error: {str(e)}",
+            show=True
+        )
+        return 0
+    except Exception as e:
+        error_dialog(
+            parent,
+            "Unexpected Error",
+            f"An unexpected error occurred while sending highlights.\n\n"
+            f"Error: {str(e)}\n\n"
+            f"Please check the calibre debug log for more details.",
+            show=True
+        )
+        return 0
 
     if amt > 0:
-        # don't update send time if no highlights were actually sent. this makes sure you
-        # won't mess up your prev_send if you accidentally send new highlights twice in a row.
         if update_send_time:
-            # has to be time.gmtime() so that we use utc. calibre stores highlight time as UTC, and last_send_time
-            # is what we compare to. if you use localtime instead of gmtime, you'll get rare bugs when the computer's
-            # timezone changes.
-            prefs["last_send_time"] = strftime("%Y-%m-%d %H:%M:%S", gmtime())
+            prefs["last_send_time"] = strftime(TIME_FORMAT, gmtime())
 
         info = f"Success: {amt} highlight{' has' if amt == 1 else 's have'} been sent to Obsidian."
         if prefs['highlights_sent_dialog']:
@@ -88,18 +140,14 @@ def send_new_highlights(parent, db):
     :param parent: QDialog or other window that is the parent of the info dialogs this function makes
     :param db: calibre database: Cache().new_api
     """
-    last_send_time = mktime(strptime(prefs["last_send_time"], "%Y-%m-%d %H:%M:%S"))
+    last_send_time = mktime(strptime(prefs["last_send_time"], TIME_FORMAT))
 
     def highlight_send_condition(highlight) -> bool:
         """
         :param highlight: json object containing a calibre highlight's data
         :return: true if the highlight was made after last send time, else false
         """
-        # an alternative method is to save the uuid of each highlight as it's sent,
-        # then save that list in prefs, then check if the highlight is in that list
-
-        # calibre's time format example: "2022-09-10T20:32:08.820Z"
-        highlight_time = mktime(strptime(highlight["annotation"]["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
+        highlight_time = parse_highlight_timestamp(highlight)
         return highlight_time > last_send_time
 
     new_prev_send = prefs["last_send_time"]
@@ -144,12 +192,10 @@ def send_new_selected_highlights(parent, db):
 
     rows = gui.library_view.selectionModel().selectedRows()
     selected_ids = list(map(gui.library_view.model().id, rows))
-    last_send_time = mktime(strptime(prefs["last_send_time"], "%Y-%m-%d %H:%M:%S"))
+    last_send_time = mktime(strptime(prefs["last_send_time"], TIME_FORMAT))
 
     def highlight_send_condition(highlight):
-        # todo: probably a good idea to move the last_send_time check to an external function, since the code is
-        #  repeated in 3 places: send_new_selected_highlights, send_new_highlights, resend_highlights
-        highlight_time = mktime(strptime(highlight["annotation"]["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
+        highlight_time = parse_highlight_timestamp(highlight)
         return highlight_time > last_send_time and int(highlight["book_id"]) in selected_ids
 
     send_highlights(parent, db, highlight_send_condition, update_send_time=True)
@@ -207,18 +253,15 @@ def resend_highlights(parent, db):
 
     # prev_send is the date/time of the send time before last_send_time.
     # send highlights between then and last_send_time.
-    prev_send_time = mktime(strptime(prefs["prev_send"], "%Y-%m-%d %H:%M:%S"))
-    last_send_time = mktime(strptime(prefs["last_send_time"], "%Y-%m-%d %H:%M:%S"))
+    prev_send_time = mktime(strptime(prefs["prev_send"], TIME_FORMAT))
+    last_send_time = mktime(strptime(prefs["last_send_time"], TIME_FORMAT))
 
     def highlight_send_condition(highlight) -> bool:
         """
         :param highlight: json object containing a calibre highlight's data
         :return: true if the highlight was made between prev send time and most recent send time
         """
-        # alternatively, store the uuids of previously sent highlights in prefs, and only send those
-
-        # calibre's time format example: "2022-09-10T20:32:08.820Z"
-        highlight_time = mktime(strptime(highlight["annotation"]["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
+        highlight_time = parse_highlight_timestamp(highlight)
         return prev_send_time < highlight_time < last_send_time
 
     send_highlights(parent, db, condition=highlight_send_condition, update_send_time=False)

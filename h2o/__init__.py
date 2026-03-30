@@ -2,19 +2,17 @@
 # https://manual.calibre-ebook.com/creating_plugins.html
 
 from calibre.customize import InterfaceActionBase
-
-_version = (1, 4, 1)
-version = ".".join([str(x) for x in _version])
+from calibre_plugins.highlights_to_obsidian.version import _version, version
 
 
 class HighlightsToObsidianPlugin(InterfaceActionBase):
     name                = 'Highlights to Obsidian'
     description         = 'Automatically send highlights from calibre to obsidian.md'
-    supported_platforms = ['windows', 'osx', 'linux']  # only tested on windows
+    supported_platforms = ['windows', 'osx', 'linux']
     author              = 'jm289765'
     version             = _version
     actual_plugin       = 'calibre_plugins.highlights_to_obsidian.menu_button:MenuButton'
-    minimum_calibre_version = (6, 10, 0)  # this plugin probably works on earlier versions, i haven't tested
+    minimum_calibre_version = (6, 10, 0)
 
     def is_customizable(self):
         return True
