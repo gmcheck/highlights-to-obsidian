@@ -38,9 +38,9 @@ NO_NOTES_FORMAT = """
 HEADER_FORMAT = ""
 
 NOTE_HEADER_FORMAT = """---
-tags: [Calibre/高亮, 读书笔记/待分类]
-book: 《{title}》
-author: {authors_str}
+tags: [books]
+book: "《{title}》"
+author: "{authors_str}"
 ---
 # 《{title}》读书笔记
 """
