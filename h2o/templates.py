@@ -13,8 +13,8 @@ BODY_FORMAT = """
 ## 高亮记录 | {chapter} | {localdate} {localtime}
 > [!quote] 原文高亮
 {blockquote}
-> 
-> ^{highlight_id}
+
+^{highlight_id}
 
 [📖 一键跳回Calibre原文]({url})
 
@@ -28,8 +28,8 @@ NO_NOTES_FORMAT = """
 ## 高亮记录 | {chapter} | {localdate} {localtime}
 > [!quote] 原文高亮
 {blockquote}
-> 
-> ^{highlight_id}
+
+^{highlight_id}
 
 [📖 一键跳回Calibre原文]({url})
 
