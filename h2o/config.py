@@ -9,13 +9,12 @@ from calibre.utils.config import JSONConfig
 from calibre_plugins.highlights_to_obsidian.version import version
 from calibre_plugins.highlights_to_obsidian.constants import TIME_FORMAT
 from calibre_plugins.highlights_to_obsidian.templates import (
-    VAULT_DEFAULT_NAME, TITLE_FORMAT, BODY_FORMAT, NO_NOTES_FORMAT,
+    VAULT_DEFAULT_NAME, TITLE_FORMAT, BODY_FORMAT,
     HEADER_FORMAT, NOTE_HEADER_FORMAT, SORT_KEY_DEFAULT, FORMAT_OPTIONS
 )
 
 
 def create_selectable_label(text: str) -> QLabel:
-    """创建可选择的标签，允许用户复制文本"""
     label = QLabel(text)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     return label
@@ -26,7 +25,7 @@ prefs = JSONConfig('plugins/highlights_to_obsidian')
 prefs.defaults['vault_name'] = VAULT_DEFAULT_NAME
 prefs.defaults['title_format'] = TITLE_FORMAT
 prefs.defaults['body_format'] = BODY_FORMAT
-prefs.defaults['no_notes_format'] = NO_NOTES_FORMAT
+prefs.defaults['no_notes_format'] = ""
 prefs.defaults['header_format'] = HEADER_FORMAT
 prefs.defaults['note_header_format'] = NOTE_HEADER_FORMAT
 prefs.defaults['sort_key'] = SORT_KEY_DEFAULT
@@ -82,7 +81,6 @@ class ConfigWidget(QWidget):
 
 
 class H2OConfigDialog(QDialog):
-    """主配置对话框，使用选项卡整合所有配置"""
 
     def __init__(self):
         QDialog.__init__(self)
@@ -98,11 +96,11 @@ class H2OConfigDialog(QDialog):
 
         self.format_tab = self._create_format_tab()
         self.vault_tab = self._create_vault_tab()
-        self.options_tab = self._create_options_tab()
+        self.advanced_tab = self._create_advanced_tab()
 
         self.tabs.addTab(self.format_tab, "Formatting")
-        self.tabs.addTab(self.vault_tab, "Vault & Direct Write")
-        self.tabs.addTab(self.options_tab, "Other Options")
+        self.tabs.addTab(self.vault_tab, "Vault")
+        self.tabs.addTab(self.advanced_tab, "Advanced")
 
         self.buttons = QDialogButtonBox()
         self.buttons.setStandardButtons(
@@ -112,49 +110,44 @@ class H2OConfigDialog(QDialog):
         self.main_layout.addWidget(self.buttons)
 
     def _create_format_tab(self) -> QWidget:
-        """创建格式化选项卡"""
         tab = QWidget()
         layout = QVBoxLayout()
         tab.setLayout(layout)
         layout.setSpacing(4)
 
-        format_info = "<b>The following formatting options are available.</b> " + \
-                      "To use one, put it in curly brackets, as in {title} or {blockquote}."
-        layout.addWidget(QLabel(format_info))
+        layout.addWidget(QLabel(
+            "Use <b>{variable}</b> in templates. "
+            "Use <b>{if_notes}...{end_if_notes}</b> for content shown only when highlight has notes."
+        ))
 
-        self._add_format_options_list(layout)
+        self.var_toggle_btn = QPushButton("▶ 显示变量参考")
+        self.var_toggle_btn.setFlat(True)
+        self.var_toggle_btn.setStyleSheet("text-align: left; padding: 2px;")
+        self.var_toggle_btn.clicked.connect(self._toggle_var_ref)
+        layout.addWidget(self.var_toggle_btn)
+
+        self.var_ref_widget = self._create_var_ref_widget()
+        self.var_ref_widget.setVisible(False)
+        layout.addWidget(self.var_ref_widget)
 
         layout.addWidget(QLabel('<b>Note title format:</b>'))
         self.title_format_input = QLineEdit()
-        self.title_format_input.setText(prefs['title_format'])
+        self.title_format_input.setText(prefs['title_format'] or TITLE_FORMAT)
         self.title_format_input.setPlaceholderText("Note title format...")
         layout.addWidget(self.title_format_input)
 
         layout.addWidget(QLabel('<b>Note body format:</b>'))
         self.body_format_input = QPlainTextEdit()
         self.body_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.body_format_input.setPlainText(prefs['body_format'])
-        self.body_format_input.setFixedHeight(120)
+        self.body_format_input.setPlainText(prefs['body_format'] or BODY_FORMAT)
+        self.body_format_input.setFixedHeight(150)
         layout.addWidget(self.body_format_input)
 
-        layout.addWidget(QLabel('<b>Body format for highlights without notes</b> (if empty, defaults to the above):'))
-        self.no_notes_format_input = QPlainTextEdit()
-        self.no_notes_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.no_notes_format_input.setPlainText(prefs['no_notes_format'])
-        self.no_notes_format_input.setFixedHeight(100)
-        layout.addWidget(self.no_notes_format_input)
-
-        layout.addWidget(QLabel('<b>Header format</b> (leave empty to disable):'))
-        self.header_format_input = QPlainTextEdit()
-        self.header_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.header_format_input.setPlainText(prefs['header_format'])
-        self.header_format_input.setFixedHeight(60)
-        layout.addWidget(self.header_format_input)
-
-        layout.addWidget(QLabel('<b>Note header format</b> (only added once for new note, supports: {title}, {authors_str}):'))
+        layout.addWidget(QLabel(
+            '<b>笔记头部模板</b> (only added once for new note, supports: {title}, {authors_str}):'))
         self.note_header_format_input = QPlainTextEdit()
         self.note_header_format_input.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.note_header_format_input.setPlainText(prefs.get('note_header_format', ''))
+        self.note_header_format_input.setPlainText(prefs.get('note_header_format', '') or NOTE_HEADER_FORMAT)
         self.note_header_format_input.setFixedHeight(80)
         layout.addWidget(self.note_header_format_input)
 
@@ -165,10 +158,13 @@ class H2OConfigDialog(QDialog):
         layout.addStretch()
         return tab
 
-    def _add_format_options_list(self, layout: QVBoxLayout):
-        """添加格式化选项列表"""
-        f_opt_str = "'" + "', '".join(FORMAT_OPTIONS) + "'"
+    def _create_var_ref_widget(self) -> QWidget:
+        widget = QWidget()
+        vlayout = QVBoxLayout()
+        vlayout.setContentsMargins(10, 2, 2, 2)
+        vlayout.setSpacing(2)
 
+        f_opt_str = "'" + "', '".join(FORMAT_OPTIONS) + "'"
         strs = []
         char_count = 0
         start_idx = 0
@@ -179,16 +175,24 @@ class H2OConfigDialog(QDialog):
                 start_idx = idx
                 char_count = 0
         strs.append(f_opt_str[start_idx:])
+        vlayout.addWidget(create_selectable_label("<br/>".join(strs)))
 
-        layout.addWidget(create_selectable_label("<br/>".join(strs)))
-        layout.addWidget(create_selectable_label("All times use UTC by default. To use local time instead, add 'local' " +
-                                "to the beginning: {localdatetime}, {localnow}, etc."))
-        layout.addWidget(create_selectable_label("Note that all times, except 'now' times, are the time the highlight was made, not the " +
-                                "current time."))
-        layout.addWidget(create_selectable_label("<b>Tip:</b> Use {notes_quoted} for notes with blank lines, {callout_quote} for Obsidian callout."))
+        vlayout.addWidget(create_selectable_label(
+            "All times use UTC by default. Add 'local' prefix for local time: {localdatetime}, {localnow}, etc."))
+        vlayout.addWidget(create_selectable_label(
+            "All times (except 'now') are when the highlight was made, not the current time."))
+        vlayout.addWidget(create_selectable_label(
+            "<b>Tip:</b> {notes_quoted} for notes with blank lines, {callout_quote} for Obsidian callout."))
+
+        widget.setLayout(vlayout)
+        return widget
+
+    def _toggle_var_ref(self):
+        visible = not self.var_ref_widget.isVisible()
+        self.var_ref_widget.setVisible(visible)
+        self.var_toggle_btn.setText("▼ 隐藏变量参考" if visible else "▶ 显示变量参考")
 
     def _create_vault_tab(self) -> QWidget:
-        """创建 Vault 和直接写入选项卡"""
         tab = QWidget()
         layout = QVBoxLayout()
         tab.setLayout(layout)
@@ -245,49 +249,54 @@ class H2OConfigDialog(QDialog):
         layout.addWidget(direct_group)
         self.direct_group = direct_group
 
-        advanced_group = QGroupBox("高级选项")
-        advanced_layout = QVBoxLayout()
-        advanced_layout.setSpacing(4)
+        sort_group = QGroupBox("排序设置")
+        sort_layout = QVBoxLayout()
+        sort_layout.setSpacing(4)
 
-        advanced_layout.addWidget(QLabel("<b>Sort key:</b> Sort order for highlights in same note."))
-        advanced_layout.addWidget(create_selectable_label("Options: timestamp, location, date, time, chapter"))
+        sort_layout.addWidget(QLabel("<b>Sort key:</b> Sort order for highlights in same note."))
+        sort_layout.addWidget(create_selectable_label("Options: timestamp, location, date, time, chapter"))
         self.sort_input = QLineEdit()
         self.sort_input.setText(prefs['sort_key'])
-        advanced_layout.addWidget(self.sort_input)
+        sort_layout.addWidget(self.sort_input)
 
-        advanced_layout.addWidget(QLabel('<b>Maximum note size</b> (0 = unlimited):'))
-        self.max_size_input = QLineEdit()
-        self.max_size_input.setText(str(prefs['max_note_size']))
-        advanced_layout.addWidget(self.max_size_input)
-
-        self.copy_header_checkbox = QCheckBox(
-            "Include header in each split note")
-        self.copy_header_checkbox.setChecked(prefs['copy_header'])
-        advanced_layout.addWidget(self.copy_header_checkbox)
-
-        advanced_group.setLayout(advanced_layout)
-        layout.addWidget(advanced_group)
+        sort_group.setLayout(sort_layout)
+        layout.addWidget(sort_group)
 
         self._update_vault_options()
         layout.addStretch()
         return tab
 
     def _update_vault_options(self):
-        """根据 direct write 选项更新其他选项状态"""
         use_direct = self.use_direct_chk.isChecked()
         self.vault_input.setEnabled(not use_direct)
         self.vault_path_input.setEnabled(use_direct)
         self.open_after_chk.setEnabled(use_direct)
         self.prepend_chk.setEnabled(use_direct)
 
-    def _create_options_tab(self) -> QWidget:
-        """创建其他选项卡"""
+    def _create_advanced_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout()
         tab.setLayout(layout)
         layout.setSpacing(8)
 
-        send_group = QGroupBox("高亮发送设置")
+        note_group = QGroupBox("笔记设置")
+        note_layout = QVBoxLayout()
+        note_layout.setSpacing(4)
+
+        note_layout.addWidget(QLabel('<b>Maximum note size</b> (0 = unlimited):'))
+        self.max_size_input = QLineEdit()
+        self.max_size_input.setText(str(prefs['max_note_size']))
+        note_layout.addWidget(self.max_size_input)
+
+        self.copy_header_checkbox = QCheckBox(
+            "Include header in each split note")
+        self.copy_header_checkbox.setChecked(prefs['copy_header'])
+        note_layout.addWidget(self.copy_header_checkbox)
+
+        note_group.setLayout(note_layout)
+        layout.addWidget(note_group)
+
+        send_group = QGroupBox("发送设置")
         send_layout = QVBoxLayout()
         send_layout.setSpacing(4)
 
@@ -310,23 +319,6 @@ class H2OConfigDialog(QDialog):
         send_group.setLayout(send_layout)
         layout.addWidget(send_group)
 
-        web_group = QGroupBox("Web 用户设置")
-        web_layout = QVBoxLayout()
-        web_layout.setSpacing(4)
-
-        web_layout.addWidget(QLabel('<b>Web username:</b>'))
-        self.web_user_name_input = QLineEdit()
-        self.web_user_name_input.setText(prefs['web_user_name'])
-        self.web_user_name_input.setPlaceholderText("* for default")
-        web_layout.addWidget(self.web_user_name_input)
-
-        self.web_user_checkbox = QCheckBox("Send web user's highlights")
-        self.web_user_checkbox.setChecked(prefs['web_user'])
-        web_layout.addWidget(self.web_user_checkbox)
-
-        web_group.setLayout(web_layout)
-        layout.addWidget(web_group)
-
         ui_group = QGroupBox("界面选项")
         ui_layout = QVBoxLayout()
         ui_layout.setSpacing(4)
@@ -342,41 +334,59 @@ class H2OConfigDialog(QDialog):
         ui_group.setLayout(ui_layout)
         layout.addWidget(ui_group)
 
-        advanced_group = QGroupBox("高级选项")
-        advanced_layout = QVBoxLayout()
-        advanced_layout.setSpacing(4)
+        web_group = QGroupBox("Web 用户设置")
+        web_layout = QVBoxLayout()
+        web_layout.setSpacing(4)
+
+        self.web_user_checkbox = QCheckBox("Send web user's highlights")
+        self.web_user_checkbox.setChecked(prefs['web_user'])
+        self.web_user_checkbox.stateChanged.connect(self._update_web_options)
+        web_layout.addWidget(self.web_user_checkbox)
+
+        web_layout.addWidget(QLabel('<b>Web username:</b>'))
+        self.web_user_name_input = QLineEdit()
+        self.web_user_name_input.setText(prefs['web_user_name'])
+        self.web_user_name_input.setPlaceholderText("* for default")
+        web_layout.addWidget(self.web_user_name_input)
+
+        web_group.setLayout(web_layout)
+        layout.addWidget(web_group)
+
+        debug_group = QGroupBox("调试")
+        debug_layout = QVBoxLayout()
+        debug_layout.setSpacing(4)
 
         self.linux_xdg_checkbox = QCheckBox("Use xdg-open (Linux only)")
         self.linux_xdg_checkbox.setChecked(prefs['use_xdg_open'])
         self.linux_xdg_checkbox.setEnabled(sys.platform.startswith('linux'))
-        advanced_layout.addWidget(self.linux_xdg_checkbox)
+        debug_layout.addWidget(self.linux_xdg_checkbox)
 
         self.file_logging_checkbox = QCheckBox("Enable file logging")
         self.file_logging_checkbox.setChecked(prefs.get('enable_file_logging', False))
-        advanced_layout.addWidget(self.file_logging_checkbox)
+        debug_layout.addWidget(self.file_logging_checkbox)
 
-        advanced_group.setLayout(advanced_layout)
-        layout.addWidget(advanced_group)
+        debug_group.setLayout(debug_layout)
+        layout.addWidget(debug_group)
 
         layout.addStretch()
         return tab
+
+    def _update_web_options(self):
+        enabled = self.web_user_checkbox.isChecked()
+        self.web_user_name_input.setEnabled(enabled)
 
     def set_time_now(self):
         prefs["last_send_time"] = time.strftime(TIME_FORMAT, time.gmtime())
         self.time_input.setText(prefs['last_send_time'])
 
     def reset_to_defaults(self):
-        """恢复模板到默认值（不包括标题格式）"""
         self.body_format_input.setPlainText(BODY_FORMAT)
-        self.no_notes_format_input.setPlainText(NO_NOTES_FORMAT)
-        self.header_format_input.setPlainText(HEADER_FORMAT)
         self.note_header_format_input.setPlainText(NOTE_HEADER_FORMAT)
 
     def save_settings(self):
         prefs['title_format'] = self.title_format_input.text()
-        prefs['body_format'] = self.body_format_input.toPlainText()
-        prefs['no_notes_format'] = self.no_notes_format_input.toPlainText()
-        prefs['header_format'] = self.header_format_input.toPlainText()
+        body = self.body_format_input.toPlainText().strip()
+        prefs['body_format'] = body if body else BODY_FORMAT
         prefs['note_header_format'] = self.note_header_format_input.toPlainText()
 
         prefs['vault_name'] = self.vault_input.text()

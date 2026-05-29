@@ -358,37 +358,49 @@ def send_item_to_obsidian(obsidian_data: Dict[str, str]) -> None:
         )
 
 
-def format_data(dat: Dict[str, str], title: str, body: str, no_notes_body: str = None) -> List[str]:
+import re
+
+def process_conditional_blocks(template: str, dat: Dict) -> str:
+    has_notes = len(dat.get("notes", "").strip()) > 0
+
+    if "{if_notes}" in template:
+        if has_notes:
+            template = template.replace("{if_notes}", "").replace("{end_if_notes}", "")
+        else:
+            template = re.sub(r"\{if_notes\}.*?\{end_if_notes\}", "", template, flags=re.DOTALL)
+    else:
+        if not has_notes:
+            template = template.replace("{notes_quoted}", "")
+            template = template.replace("{notes}", "")
+
+    template = re.sub(r"\n{3,}", "\n\n", template)
+    return template
+
+
+def format_data(dat: Dict[str, str], title: str, body: str) -> List[str]:
     """
     apply string.format() to title and body with data values from dat. Also removes slashes from title.
 
-    if there are no notes associated with a highlight, then no_notes_body will be used instead of body
+    Supports conditional blocks: {if_notes}...{end_if_notes} - content is only shown when highlight has notes.
 
     :return: list containing two strings: [formatted title, formatted body]
     """
 
     def remove_slashes(text: str) -> str:
-        # remove slashes in the note's title, since slashes in obsidian note titles will specify a directory
         return text.replace("/", "-").replace("\\", "-")
 
     def remove_illegal_title_chars(text: str) -> str:
-        # illegal title characters characters: * " \ / < > : | ?
-        # but we won't remove slashes because they're used for putting the note in a folder
-        # these can be title characters, but will break Markdown links to the file: # ^ [ ]
         illegals = '*"<>:|?#^[]'
         ret = text
-
         for c in illegals:
             ret = ret.replace(c, "")
-
         return ret
 
-    # use format_map instead of format so that we leave invalid placeholders, e.g. if a highlight contains curly
-    # brackets, we don't want to replace the part in the highlight (it'll still be replaced if the highlight contains
-    # a valid placeholder though).
+    body = process_conditional_blocks(body, dat)
+
     pre_format = title.replace("{title}", remove_slashes(dat["title"]))
     return [remove_illegal_title_chars(pre_format.format_map(dat)),
-            body.format_map(dat) if no_notes_body and len(dat["notes"]) > 0 else no_notes_body.format_map(dat)]
+            body.format_map(dat)]
 
 
 def format_single(dat: Dict[str, str], item_format: str) -> str:
@@ -517,6 +529,7 @@ def make_highlight_format_dict(data: Dict, calibre_library: str) -> Dict[str, st
     raw_notes = annot["notes"] if "notes" in annot else ""
     raw_highlight = annot["highlighted_text"]
     uuid_short = annot["uuid"][:8] if len(annot["uuid"]) >= 8 else annot["uuid"]
+    uuid_short = uuid_short.replace("_", "-")
 
     notes_quoted_result = format_notes(raw_notes)
 
@@ -919,7 +932,6 @@ class HighlightSender:
         self.vault_name: str = prefs.defaults['vault_name']
         self.title_format: str = prefs.defaults['title_format']
         self.body_format: str = prefs.defaults['body_format']
-        self.no_notes_format: str = prefs.defaults['no_notes_format']
         self.header_format: str = prefs.defaults['header_format']
         self.book_titles_authors: Dict[int, Dict[str, str]] = {}
         self.annotations_list: List = []
@@ -939,10 +951,6 @@ class HighlightSender:
 
     def set_body_format(self, body_format: str) -> None:
         self.body_format = body_format
-
-    def set_no_notes_format(self, no_notes_format: str) -> None:
-        """设置无笔记高亮的正文格式"""
-        self.no_notes_format = no_notes_format
 
     def set_header_format(self, header_format: str) -> None:
         """设置头部格式"""
@@ -1011,8 +1019,7 @@ class HighlightSender:
         title, body, header = False, False, False
         for f in formats:
             title = title or (f in self.title_format)
-            body = body or (f in self.body_format) or (
-                f in self.no_notes_format)
+            body = body or (f in self.body_format)
             header = header or (f in self.header_format)
         return title, body, header
 
@@ -1107,7 +1114,7 @@ class HighlightSender:
         dat = make_format_dict(
             _highlight, self.library_name, self.book_titles_authors)
         formatted = format_data(dat, self.title_format,
-                                self.body_format, self.no_notes_format)
+                                self.body_format)
 
         # only make one header per title
         header = None if formatted[0] in _headers else format_single(

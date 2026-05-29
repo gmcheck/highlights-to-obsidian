@@ -7,9 +7,9 @@
 3. [快速入门](#快速入门)
 4. [配置详解](#配置详解)
    - [Formatting（格式化）选项卡](#formatting格式化选项卡)
-   - [Vault & Direct Write（库与直接写入）选项卡](#vault--direct-write库与直接写入选项卡)
-   - [Other Options（其他选项）选项卡](#other-options其他选项选项卡)
-5. [模板变量参考](#模板变量参考)
+   - [Vault（库设置）选项卡](#vault库设置选项卡)
+   - [Advanced（高级选项）选项卡](#advanced高级选项选项卡)
+5. [模板语法参考](#模板语法参考)
 6. [发送功能说明](#发送功能说明)
 7. [常见问题](#常见问题)
 
@@ -63,8 +63,9 @@
    - 选择文本，添加高亮和批注
 
 3. **发送到 Obsidian**
-   - 点击插件图标
-   - 选择发送方式（全部/新增/选中）
+   - 在 Calibre 书库列表中选中一本书
+   - 点击工具栏 H2O 图标，自动发送选中书籍的新高亮
+   - 或点击下拉箭头选择其他发送方式
 
 ### 推荐配置（Direct Write 模式）
 
@@ -82,49 +83,32 @@
 
 ## 配置详解
 
+配置窗口包含三个选项卡：Formatting、Vault、Advanced。
+
 ### Formatting（格式化）选项卡
 
 此选项卡用于自定义笔记的格式模板。
 
-#### 可用格式化变量
+#### 变量参考
 
-在模板中使用 `{变量名}` 格式插入动态内容：
+点击「▶ 显示变量参考」可展开/折叠变量列表。变量列表仅作参考，不影响配置。
 
-| 变量名 | 说明 | 示例 |
-|--------|------|------|
-| `title` | 书籍标题 | 三体 |
-| `authors` | 作者（元组） | ('刘慈欣',) |
-| `authors_str` | 作者（字符串） | 刘慈欣 |
-| `highlight` / `highlight_text` | 高亮文本原文 | 生存是文明的第一需要 |
-| `blockquote` | 引用块格式的高亮 | > 生存是文明的第一需要 |
-| `callout_quote` | Obsidian callout 格式 | > [!quote] 生存是文明的第一需要 |
-| `notes` | 批注原文 | 这是费米悖论的核心 |
-| `notes_quoted` | 引用块格式的批注 | > 这是费米悖论的核心 |
-| `chapter` | 章节标题 | 第一章 疯狂年代 |
-| `url` | 跳转到 Calibre 的链接 | calibre://view-book/... |
-| `location` | CFI 位置标识 | /52/2/4/6/1:97 |
-| `uuid` | 高亮唯一标识 | abc123... |
-| `highlight_id` | 短 ID（8位） | abc12345 |
-| `bookid` | Calibre 书籍 ID | 123 |
-| `timestamp` | 高亮时间戳 | 1662846728.0 |
-| `date` | 高亮日期（UTC） | 2022-09-10 |
-| `time` | 高亮时间（UTC） | 20:32:08 |
-| `datetime` | 高亮日期时间（UTC） | 2022-09-10 20:32:08 |
-| `localdate` | 高亮日期（本地时间） | 2022-09-11 |
-| `localtime` | 高亮时间（本地时间） | 04:32:08 |
-| `localdatetime` | 高亮日期时间（本地） | 2022-09-11 04:32:08 |
-| `datenow` | 当前日期 | 2024-01-15 |
-| `timenow` | 当前时间 | 14:30:00 |
-| `utcnow` | 当前 UTC 时间 | 2024-01-15 06:30:00 |
-| `totalsent` | 累计发送高亮数 | 150 |
-| `booksent` | 本书发送高亮数 | 25 |
-| `highlightsent` | 本次发送高亮数 | 3 |
+#### 条件块语法
 
-**时间变量说明**：
-- 默认使用 UTC 时间
-- 添加 `local` 前缀使用本地时间，如 `{localdate}`、`{localdatetime}`
-- `date`/`time` 等是高亮创建时的时间
-- `datenow`/`timenow` 是当前时间
+模板支持条件块语法，用于控制内容的有条件显示：
+
+```
+{if_notes}
+### 我的思考
+
+{notes_quoted}
+{end_if_notes}
+```
+
+- `{if_notes}...{end_if_notes}`：仅当高亮有批注时，才显示其中的内容
+- 无批注时，整个条件块（包括标记）会被完全移除
+
+**示例**：默认模板中，"我的思考"部分使用条件块包裹，无批注时不会显示空标题。
 
 #### Note title format（笔记标题格式）
 
@@ -146,7 +130,7 @@
 
 #### Note body format（笔记正文格式）
 
-定义每条高亮的格式。
+定义每条高亮的格式。支持条件块语法。
 
 **默认值**：
 ```
@@ -154,54 +138,34 @@
 ## 高亮记录 | {chapter} | {localdate} {localtime}
 > [!quote] 原文高亮
 {blockquote}
-> 
-> ^{highlight_id}
+
+^{highlight_id}
 
 [📖 一键跳回Calibre原文]({url})
 
+{if_notes}
 ### 我的思考
 
 {notes_quoted}
+{end_if_notes}
 ```
 
 **说明**：
 - `---` 用于分隔多条高亮
-- `^{highlight_id}` 创建 Obsidian 块引用
+- `^{highlight_id}` 创建 Obsidian 块引用（阅读模式下自动隐藏）
 - `{notes_quoted}` 会自动处理批注中的空行
+- `{if_notes}...{end_if_notes}` 确保无批注时不显示"我的思考"标题
 
-#### Body format for highlights without notes（无批注高亮的格式）
-
-当高亮没有批注时使用的格式。如果留空，则使用「Note body format」。
-
-**默认值**：
-```
----
-## 高亮记录 | {chapter} | {localdate} {localtime}
-> [!quote] 原文高亮
-{blockquote}
-> 
-> ^{highlight_id}
-
-[📖 一键跳回Calibre原文]({url})
-
-```
-
-#### Header format（章节头部格式）
-
-用于在笔记中添加章节标题头部。留空则不添加。
-
-**说明**：此功能用于按章节分组显示高亮，需要配合 `{chapter}` 变量使用。
-
-#### Note header format（笔记头部格式）
+#### 笔记头部模板（Note header format）
 
 **重要**：此模板仅在新建笔记时添加一次，适合放置 YAML front matter。
 
 **默认值**：
 ```yaml
 ---
-tags: [Calibre/高亮, 读书笔记/待分类]
-book: 《{title}》
-author: {authors_str}
+tags: [books]
+book: "《{title}》"
+author: "{authors_str}"
 ---
 # 《{title}》读书笔记
 ```
@@ -217,13 +181,13 @@ author: {authors_str}
 
 #### 恢复默认模板按钮
 
-点击「恢复默认模板」按钮可将所有模板恢复为默认值（标题格式除外）。
+点击「恢复默认模板」按钮可将正文格式和笔记头部模板恢复为默认值（标题格式除外）。
 
 ---
 
-### Vault & Direct Write（库与直接写入）选项卡
+### Vault（库设置）选项卡
 
-此选项卡配置 Obsidian 连接和发送模式。
+此选项卡配置 Obsidian 连接、发送模式和排序。
 
 #### 发送模式对比
 
@@ -280,7 +244,7 @@ author: {authors_str}
 
 **推荐**：追加模式配合 `location` 排序，高亮按书籍顺序排列。
 
-#### 高级选项
+#### 排序设置
 
 ##### Sort key（排序键）
 
@@ -300,6 +264,12 @@ author: {authors_str}
 
 **注意**：排序仅对同一批发送的高亮生效。如果分多次发送，每次发送的内容会按设置追加/前置到笔记中。
 
+---
+
+### Advanced（高级选项）选项卡
+
+#### 笔记设置
+
 ##### Maximum note size（最大笔记大小）
 
 设置单个笔记文件的最大大小（字符数），超过时会自动分割。
@@ -313,11 +283,7 @@ author: {authors_str}
 
 当笔记因超过大小限制而分割时，是否在每个分割后的笔记中包含头部。
 
----
-
-### Other Options（其他选项）选项卡
-
-#### 高亮发送设置
+#### 发送设置
 
 ##### Last send time（上次发送时间）
 
@@ -335,20 +301,6 @@ author: {authors_str}
 
 **适用场景**：如果遇到发送失败，可以适当增加此值。
 
-#### Web 用户设置
-
-##### Web username
-
-设置 Web 用户名，用于区分不同用户的高亮。
-
-**默认值**：`*`（匹配所有用户）
-
-##### Send web user's highlights
-
-勾选后只发送指定 Web 用户的高亮。
-
-**适用场景**：多人共用 Calibre 时区分各自的高亮。
-
 #### 界面选项
 
 ##### Confirm before sending all highlights
@@ -363,7 +315,17 @@ author: {authors_str}
 
 **推荐**：勾选，方便确认发送结果。
 
-#### 高级选项
+#### Web 用户设置
+
+用于多人共用 Calibre 时区分各自的高亮。勾选「Send web user's highlights」后启用用户名输入。
+
+##### Web username
+
+设置 Web 用户名，用于区分不同用户的高亮。
+
+**默认值**：`*`（匹配所有用户）
+
+#### 调试
 
 ##### Use xdg-open (Linux only)
 
@@ -379,7 +341,7 @@ author: {authors_str}
 
 ---
 
-## 模板变量参考
+## 模板语法参考
 
 ### 书籍信息变量
 
@@ -444,33 +406,56 @@ author: {authors_str}
 
 ## 发送功能说明
 
-点击工具栏插件图标，显示以下菜单选项：
+插件在 Calibre 工具栏中显示为 H2O 图标。
 
-### Send all highlights
+### 默认行为
 
-发送当前书籍的所有高亮到 Obsidian。
+**点击图标**：直接发送选中书籍的新高亮（等同于 "Send New (Selected Books)"）。
 
-**注意**：如果笔记已存在，会追加/前置内容，不会覆盖。
+**下拉菜单**：点击图标旁的下拉箭头，可访问完整菜单。
 
-### Send new highlights
+### 菜单说明
 
-只发送上次发送时间之后新增的高亮。
+#### 高频操作
 
-**原理**：根据「Last send time」配置判断哪些是新高亮。
+| 菜单项 | 说明 |
+|--------|------|
+| **Send New Highlights** | 发送所有书籍的新高亮（上次发送时间之后新增的）。发送后会更新「Last send time」。 |
+| **Send New (Selected Books)** | 仅发送 Calibre 列表中选中书籍的新高亮。**不会**更新「Last send Time」，未选中书籍的新高亮不受影响，后续仍可通过 "Send New Highlights" 发送。 |
 
-### Send selected highlights
+#### 低频操作
 
-发送当前选中的高亮。
+| 菜单项 | 说明 |
+|--------|------|
+| **Send All Highlights** | 发送所有书籍的全部高亮。操作前会弹出确认对话框。 |
+| **Send All (Selected Books)** | 发送选中书籍的全部高亮。操作前会弹出确认对话框。 |
+| **Resend Last Sent** | 重发上次发送的高亮。主要用于 Obsidian 未成功接收时的重试。 |
 
-**操作方式**：在 Calibre 阅读器的高亮列表中选择一条或多条高亮，然后点击此选项。
+#### 辅助操作
 
-### Open Configuration
+| 菜单项 | 说明 |
+|--------|------|
+| **Config** | 打开配置窗口 |
+| **Help** | 显示帮助信息 |
 
-打开配置窗口。
+### 发送逻辑详解
 
-### About
+#### "Send New" 与 "Send New (Selected Books)" 的区别
 
-显示插件信息。
+假设书 A、书 B 都有新高亮：
+
+| 操作 | 书 A | 书 B | 更新 Last Send Time |
+|------|------|------|---------------------|
+| Send New Highlights | ✅ 发送 | ✅ 发送 | ✅ 是 |
+| Send New (Selected Books)，选中书 A | ✅ 发送 | ❌ 不发送 | ❌ 否 |
+
+**关键区别**："Send New (Selected Books)" 不会更新 `last_send_time`，因此书 B 的新高亮不会丢失，后续仍可通过 "Send New Highlights" 发送。
+
+#### 增量发送原理
+
+插件通过 `last_send_time` 记录上次发送时间。"Send New" 只发送高亮创建时间晚于 `last_send_time` 的高亮。
+
+如果需要重新发送所有高亮，可以在配置窗口的「Other Options」选项卡中点击「Now」按钮重置时间。
 
 ---
 

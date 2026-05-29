@@ -2,6 +2,9 @@
 模板定义模块
 
 统一管理所有 Obsidian 笔记模板格式
+
+条件块语法：
+  {if_notes}...{end_if_notes}  - 仅当高亮有批注时显示其中的内容
 """
 
 VAULT_DEFAULT_NAME = "My Vault"
@@ -18,21 +21,11 @@ BODY_FORMAT = """
 
 [📖 一键跳回Calibre原文]({url})
 
+{if_notes}
 ### 我的思考
 
 {notes_quoted}
-"""
-
-NO_NOTES_FORMAT = """
----
-## 高亮记录 | {chapter} | {localdate} {localtime}
-> [!quote] 原文高亮
-{blockquote}
-
-^{highlight_id}
-
-[📖 一键跳回Calibre原文]({url})
-
+{end_if_notes}
 """
 
 HEADER_FORMAT = ""
