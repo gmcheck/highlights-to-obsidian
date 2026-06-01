@@ -1,7 +1,7 @@
 from functools import partial
 from qt.core import QDialog, QVBoxLayout, QPushButton, QMessageBox, QLabel
 from calibre_plugins.highlights_to_obsidian.button_actions import (help_menu, send_new_highlights,
-                                                                   send_all_highlights, resend_highlights,
+                                                                   send_all_highlights,
                                                                    send_new_selected_highlights, send_all_selected_highlights)
 from calibre_plugins.highlights_to_obsidian.config import prefs
 from calibre_plugins.highlights_to_obsidian.version import version
@@ -42,11 +42,6 @@ class MainDialog(QDialog):
         self.send_all_button = QPushButton("Send all highlights to obsidian", self)
         self.send_all_button.clicked.connect(partial(send_all_highlights, self, db))
         self.l.addWidget(self.send_all_button)
-
-        # resend previously sent highlights button
-        self.resend_button = QPushButton("Resend previously sent highlights", self)
-        self.resend_button.clicked.connect(partial(resend_highlights, self, db))
-        self.l.addWidget(self.resend_button)
 
         # send new highlights of selected books button
         self.send_new_selected_button = QPushButton("Send new highlights of selected books", self)

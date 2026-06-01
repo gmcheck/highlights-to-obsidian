@@ -3,6 +3,7 @@ import subprocess
 import sys
 import time
 import webbrowser
+from calendar import timegm
 from typing import Dict, List, Callable, Any, Tuple, Iterable, Union
 from urllib.parse import urlencode, quote
 import datetime
@@ -73,7 +74,7 @@ def parse_highlight_timestamp(highlight: Dict) -> float:
         ts = parse_highlight_timestamp(highlight)  # 返回 1662846728.0
     """
     timestamp_str = highlight["annotation"]["timestamp"][:19]
-    return time.mktime(time.strptime(timestamp_str, TIMESTAMP_FORMAT))
+    return timegm(time.strptime(timestamp_str, TIMESTAMP_FORMAT))
 
 
 def reverse_highlight_sections(content: str) -> str:
@@ -141,6 +142,44 @@ def _open_uri(uri: str) -> None:
             f"Unexpected error opening URI: {str(e)}",
             uri_length=len(uri)
         )
+
+
+def _dedup_content(content: str, existing: str) -> str:
+    """
+    Remove highlight blocks from content that already exist in the note.
+    Primary: dedup by ^highlight_id. Fallback: dedup by blockquote text content.
+    """
+    existing_ids = set(re.findall(r'\^([a-zA-Z0-9-]{6,12})', existing))
+    content_ids = set(re.findall(r'\^([a-zA-Z0-9-]{6,12})', content))
+
+    if existing_ids and content_ids:
+        duplicate_ids = existing_ids & content_ids
+        if not duplicate_ids:
+            return content
+        for did in duplicate_ids:
+            pattern = r'\n---\s*\n(?:(?!\n---\s*\n).)*?\^' + re.escape(did) + r'(?:(?!\n---\s*\n).)*'
+            content = re.sub(pattern, '', content, flags=re.DOTALL)
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        return content.strip()
+
+    existing_quotes = set(re.findall(r'^>\s*(.+)$', existing, re.MULTILINE))
+    if not existing_quotes:
+        return content
+
+    blocks = re.split(r'\n---\s*\n', content)
+    kept_blocks = []
+    for block in blocks:
+        block_quotes = set(re.findall(r'^>\s*(.+)$', block, re.MULTILINE))
+        if block_quotes and block_quotes.issubset(existing_quotes):
+            continue
+        kept_blocks.append(block)
+
+    if len(kept_blocks) == len(blocks):
+        return content
+
+    result = "\n---\n".join(kept_blocks)
+    result = re.sub(r'\n{3,}', '\n\n', result)
+    return result.strip()
 
 
 def _send_via_direct_write(obsidian_data: Dict[str, str]) -> None:
@@ -219,6 +258,12 @@ def _send_via_direct_write(obsidian_data: Dict[str, str]) -> None:
 
     note_header_format = prefs.get("note_header_format", "")
     logger.debug(f"file_existed={file_existed}, note_header_format len={len(note_header_format)}, header_data={obsidian_data.get('header_data', {})}")
+
+    if file_existed and existing:
+        content = _dedup_content(content, existing)
+        if not content.strip():
+            logger.info("All highlights already exist in %s, skipping write", target_path)
+            return
     if not file_existed and note_header_format and note_header_format.strip():
         header_data = obsidian_data.get("header_data", {})
         if header_data:

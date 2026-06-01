@@ -5,14 +5,14 @@
 .DESCRIPTION
     将 h2o 插件目录打包为 Calibre 可安装的 ZIP 插件包。
     版本号从 h2o\version.py 中自动读取，生成的 ZIP 文件名为
-    highlights-to-obsidian-{version}.zip，存放于项目根目录的 zip\ 文件夹下。
+    highlights-to-obsidian-{version}.zip，存放于项目根目录的 zips\ 文件夹下。
 
 .NOTES
     使用方式：
       powershell -ExecutionPolicy Bypass -File tools\publish.ps1
 
     输出示例：
-      Created highlights-to-obsidian-1.5.0.zip (version 1.5.0) in zip/
+      Created highlights-to-obsidian-1.5.0.zip (version 1.5.0) in zips/
 
     版本号格式：h2o\version.py 中定义 _version = (1, 5, 0)
     打包内容：h2o\ 目录下的所有文件（Calibre 插件标准结构）
@@ -35,7 +35,7 @@ if ($versionContent -match '_version\s*=\s*\((\d+),\s*(\d+),\s*(\d+)\)') {
     exit 1
 }
 
-$zipDir = Join-Path $projectRoot "zip"
+$zipDir = Join-Path $projectRoot "zips"
 $zipName = "highlights-to-obsidian-$version.zip"
 $zipPath = Join-Path $zipDir $zipName
 $h2oDir = Join-Path $projectRoot "h2o"
@@ -55,4 +55,4 @@ if (Test-Path $zipPath) {
 
 Compress-Archive -Path "$h2oDir\*" -DestinationPath $zipPath
 
-Write-Host "Created $zipName (version $version) in zip/"
+Write-Host "Created $zipName (version $version) in zips/"

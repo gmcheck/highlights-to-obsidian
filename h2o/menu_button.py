@@ -17,7 +17,6 @@ class MenuButton(InterfaceAction):
         self.new_selected_action = None
         self.all_highlights_action = None
         self.all_selected_action = None
-        self.resend_highlights_action = None
         self.user_config_action = None
         self.open_help_action = None
 
@@ -52,11 +51,6 @@ class MenuButton(InterfaceAction):
             description="Send all highlights of selected books",
             shortcut=None, triggered=self.send_all_selected)
 
-        self.resend_highlights_action = ma(
-            un + "Resend Last Sent", "Resend Last Sent",
-            description="Resend highlights from the last send (for retry)",
-            shortcut=None, triggered=self.resend)
-
         self.qaction.menu().addSeparator()
 
         ocd = "Open config settings for Highlights to Obsidian"
@@ -80,9 +74,6 @@ class MenuButton(InterfaceAction):
 
     def send_all_selected(self):
         b_acts.send_all_selected_highlights(self.gui, self.gui.current_db.new_api)
-
-    def resend(self):
-        b_acts.resend_highlights(self.gui, self.gui.current_db.new_api)
 
     def open_config(self):
         do_user_config = self.interface_action_base_plugin.do_user_config

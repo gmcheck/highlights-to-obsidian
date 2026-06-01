@@ -13,19 +13,23 @@ TITLE_FORMAT = "学习/Books/{title} by {authors}"
 
 BODY_FORMAT = """
 ---
-## 高亮记录 | {chapter} | {localdate} {localtime}
-> [!quote] 原文高亮
+
+> [!quote]
 {blockquote}
+
+**出处**
+
+{chapter} | {localdate} {localtime}
 
 ^{highlight_id}
 
-[📖 一键跳回Calibre原文]({url})
-
 {if_notes}
-### 我的思考
+**思考**
 
 {notes_quoted}
 {end_if_notes}
+
+[📖 原文]({url})
 """
 
 HEADER_FORMAT = ""

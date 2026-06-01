@@ -31,8 +31,7 @@ prefs.defaults['note_header_format'] = NOTE_HEADER_FORMAT
 prefs.defaults['sort_key'] = SORT_KEY_DEFAULT
 
 prefs.defaults['last_send_time'] = time.strftime(
-    TIME_FORMAT, time.gmtime(172800))
-prefs.defaults['prev_send'] = None
+    TIME_FORMAT, time.localtime(172800))
 prefs.defaults['confirm_send_all'] = True
 prefs.defaults['highlights_sent_dialog'] = True
 prefs.defaults['max_note_size'] = 20000
@@ -178,7 +177,7 @@ class H2OConfigDialog(QDialog):
         vlayout.addWidget(create_selectable_label("<br/>".join(strs)))
 
         vlayout.addWidget(create_selectable_label(
-            "All times use UTC by default. Add 'local' prefix for local time: {localdatetime}, {localnow}, etc."))
+            "Times with 'local' prefix use local timezone. Others use UTC. 'now' variables show current time."))
         vlayout.addWidget(create_selectable_label(
             "All times (except 'now') are when the highlight was made, not the current time."))
         vlayout.addWidget(create_selectable_label(
@@ -376,7 +375,7 @@ class H2OConfigDialog(QDialog):
         self.web_user_name_input.setEnabled(enabled)
 
     def set_time_now(self):
-        prefs["last_send_time"] = time.strftime(TIME_FORMAT, time.gmtime())
+        prefs["last_send_time"] = time.strftime(TIME_FORMAT, time.localtime())
         self.time_input.setText(prefs['last_send_time'])
 
     def reset_to_defaults(self):
@@ -385,9 +384,10 @@ class H2OConfigDialog(QDialog):
 
     def save_settings(self):
         prefs['title_format'] = self.title_format_input.text()
-        body = self.body_format_input.toPlainText().strip()
-        prefs['body_format'] = body if body else BODY_FORMAT
-        prefs['note_header_format'] = self.note_header_format_input.toPlainText()
+        body = self.body_format_input.toPlainText()
+        prefs['body_format'] = body if body.strip() else BODY_FORMAT
+        header = self.note_header_format_input.toPlainText()
+        prefs['note_header_format'] = header if header.strip() else NOTE_HEADER_FORMAT
 
         prefs['vault_name'] = self.vault_input.text()
         prefs['vault_path'] = self.vault_path_input.text().strip()

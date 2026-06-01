@@ -7,7 +7,7 @@ from calibre_plugins.highlights_to_obsidian.constants import TIME_FORMAT
 from calibre_plugins.highlights_to_obsidian.exceptions import (
     H2OError, H2OSendError, H2OURIError, H2ODirectWriteError
 )
-from time import strptime, strftime, mktime, gmtime
+from time import strptime, strftime, localtime, mktime
 
 
 def help_menu(parent):
@@ -21,7 +21,7 @@ def help_menu(parent):
            "'header' will be sent to each note exactly once when you send highlights.\n\n" + \
            "In a note's title, you can include slashes \"/\" to specify what folder the note should be in.\n\n" + \
            "Sometimes, if you send highlights while your obsidian vault is closed, not all highlights will " + \
-           "be sent. If this happens, you can use the \"Resend Previously Sent Highlights\" function.\n\n" + \
+           "be sent. If this happens, you can use the \"Send All\" function to resend.\n\n" + \
            "You can set keyboard shortcuts in calibre's Preferences -> Shortcuts -> H2O.\n\n" + \
            "Due to URI length limits, H2O can only send a few thousand words to a single note at once. Extra text " \
            "will be sent to different notes with increasing numbers added to the end of the title.\n\n" + \
@@ -123,7 +123,7 @@ def send_highlights(parent, db, condition=lambda x: True, update_send_time=True)
 
     if amt > 0:
         if update_send_time:
-            prefs["last_send_time"] = strftime(TIME_FORMAT, gmtime())
+            prefs["last_send_time"] = strftime(TIME_FORMAT, localtime())
 
         info = f"Success: {amt} highlight{' has' if amt == 1 else 's have'} been sent to Obsidian."
         if prefs['highlights_sent_dialog']:
@@ -142,17 +142,10 @@ def send_new_highlights(parent, db):
     last_send_time = mktime(strptime(prefs["last_send_time"], TIME_FORMAT))
 
     def highlight_send_condition(highlight) -> bool:
-        """
-        :param highlight: json object containing a calibre highlight's data
-        :return: true if the highlight was made after last send time, else false
-        """
         highlight_time = parse_highlight_timestamp(highlight)
         return highlight_time > last_send_time
 
-    new_prev_send = prefs["last_send_time"]
-    amt_sent = send_highlights(parent, db, highlight_send_condition)
-    if amt_sent > 0:
-        prefs["prev_send"] = new_prev_send
+    send_highlights(parent, db, highlight_send_condition)
 
 
 def send_all_highlights(parent, db):
@@ -232,38 +225,6 @@ def send_all_selected_highlights(parent, db):
         return int(highlight["book_id"]) in selected_ids
 
     send_highlights(parent, db, highlight_send_condition, update_send_time=False)
-
-
-def resend_highlights(parent, db):
-    """
-    resends highlights that were previously sent with send_new_highlights.
-
-    this function is mainly intended to be used in case obsidian fails to receive the highlights that
-    were sent to it. this sometimes happens when the obsidian program isn't open to the right vault
-    or isn't open at all when highlights are sent. it also sometimes happens for reasons unknown to me.
-
-    :param parent: QDialog or other window that is the parent of the info dialogs this function makes
-    :param db: calibre database: Cache().new_api
-    """
-    prev_send = prefs['prev_send']
-    if prev_send is None:
-        info_dialog(parent, "Cannot resend highlights", "No highlights were previously sent", show=True)
-        return
-
-    # prev_send is the date/time of the send time before last_send_time.
-    # send highlights between then and last_send_time.
-    prev_send_time = mktime(strptime(prefs["prev_send"], TIME_FORMAT))
-    last_send_time = mktime(strptime(prefs["last_send_time"], TIME_FORMAT))
-
-    def highlight_send_condition(highlight) -> bool:
-        """
-        :param highlight: json object containing a calibre highlight's data
-        :return: true if the highlight was made between prev send time and most recent send time
-        """
-        highlight_time = parse_highlight_timestamp(highlight)
-        return prev_send_time < highlight_time < last_send_time
-
-    send_highlights(parent, db, condition=highlight_send_condition, update_send_time=False)
 
 
 def book_ids_to_titles_authors(db):
